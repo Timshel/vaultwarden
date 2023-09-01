@@ -236,6 +236,10 @@ pub async fn send_invite(
     org_name: &str,
     invited_by_email: Option<String>,
 ) -> EmptyResult {
+    if CONFIG.sso_enabled() && CONFIG.sso_acceptall_invites() {
+        return send_org_enrolled(address, org_name, invited_by_email).await;
+    }
+
     let claims = generate_invite_claims(
         uuid.to_string(),
         String::from(address),
@@ -256,6 +260,19 @@ pub async fn send_invite(
             "org_name_encoded": percent_encode(org_name.as_bytes(), NON_ALPHANUMERIC).to_string(),
             "org_name": org_name,
             "token": invite_token,
+        }),
+    )?;
+
+    send_email(address, &subject, body_html, body_text).await
+}
+
+pub async fn send_org_enrolled(address: &str, org_name: &str, invited_by_email: Option<String>) -> EmptyResult {
+    let (subject, body_html, body_text) = get_text(
+        "email/send_org_enrolled",
+        json!({
+            "img_src": CONFIG._smtp_img_src(),
+            "org_name": org_name,
+            "invited_by_email": invited_by_email,
         }),
     )?;
 
