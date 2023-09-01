@@ -6,8 +6,8 @@ use serde_json::Value;
 use crate::{
     api::{
         core::{log_user_event, two_factor::email},
-        register_push_device, unregister_push_device, AnonymousNotify, EmptyResult, JsonResult, JsonUpcase, Notify,
-        PasswordOrOtpData, UpdateType,
+        register_push_device, unregister_push_device, AnonymousNotify, ApiResult, EmptyResult, JsonResult, JsonUpcase,
+        Notify, PasswordOrOtpData, UpdateType,
     },
     auth::{decode_delete, decode_invite, decode_verify_email, ClientHeaders, Headers},
     crypto,
@@ -94,7 +94,7 @@ pub struct SetPasswordData {
     MasterPasswordHash: String,
     MasterPasswordHint: Option<String>,
     #[allow(dead_code)]
-    orgIdentifier: Option<String>,
+    OrgIdentifier: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -102,13 +102,6 @@ pub struct SetPasswordData {
 struct KeysData {
     EncryptedPrivateKey: String,
     PublicKey: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct TokenPayload {
-    exp: i64,
-    email: String,
-    nonce: String,
 }
 
 /// Trims whitespace from password hints, and converts blank password hints to `None`.
@@ -183,10 +176,7 @@ pub async fn _register(data: JsonUpcase<RegisterData>, mut conn: DbConn) -> Json
                     err!("Registration email does not match invite email")
                 }
             } else if Invitation::take(&email, &mut conn).await {
-                for user_org in UserOrganization::find_invited_by_user(&user.uuid, &mut conn).await.iter_mut() {
-                    user_org.status = UserOrgStatus::Accepted as i32;
-                    user_org.save(&mut conn).await?;
-                }
+                UserOrganization::confirm_user_invitations(&user.uuid, &mut conn).await?;
                 user
             } else if CONFIG.is_signup_allowed(&email)
                 || (CONFIG.emergency_access_allowed()
@@ -202,7 +192,7 @@ pub async fn _register(data: JsonUpcase<RegisterData>, mut conn: DbConn) -> Json
             // because the vaultwarden admin can invite anyone, regardless
             // of other signup restrictions.
             if Invitation::take(&email, &mut conn).await || CONFIG.is_signup_allowed(&email) {
-                User::new(email.clone())
+                User::new(email.clone(), None)
             } else {
                 err!("Registration not allowed or user already exists")
             }
@@ -1004,14 +994,33 @@ struct SecretVerificationRequest {
     MasterPasswordHash: String,
 }
 
+// Change the KDF Iterations if necessary
+pub async fn kdf_upgrade(user: &mut User, pwd_hash: &str, conn: &mut DbConn) -> ApiResult<()> {
+    if user.password_iterations != CONFIG.password_iterations() {
+        user.password_iterations = CONFIG.password_iterations();
+        user.set_password(pwd_hash, None, false, None);
+
+        if let Err(e) = user.save(conn).await {
+            error!("Error updating user: {:#?}", e);
+        }
+    }
+    Ok(())
+}
+
 #[post("/accounts/verify-password", data = "<data>")]
-fn verify_password(data: JsonUpcase<SecretVerificationRequest>, headers: Headers) -> JsonResult {
+async fn verify_password(
+    data: JsonUpcase<SecretVerificationRequest>,
+    headers: Headers,
+    mut conn: DbConn,
+) -> JsonResult {
     let data: SecretVerificationRequest = data.into_inner().data;
-    let user = headers.user;
+    let mut user = headers.user;
 
     if !user.check_valid_password(&data.MasterPasswordHash) {
         err!("Invalid password")
     }
+
+    kdf_upgrade(&mut user, &data.MasterPasswordHash, &mut conn).await?;
 
     Ok(Json(json!({
       "MasterPasswordPolicy": {}, // Required for SSO login with mobile apps

@@ -228,7 +228,7 @@ async fn send_invite(data: JsonUpcase<EmergencyAccessInviteData>, headers: Heade
                 invitation.save(&mut conn).await?;
             }
 
-            let mut user = User::new(email.clone());
+            let mut user = User::new(email.clone(), None);
             user.save(&mut conn).await?;
             (user, true)
         }

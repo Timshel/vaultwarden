@@ -28,7 +28,7 @@ pub enum OrgPolicyType {
     MasterPassword = 1,
     PasswordGenerator = 2,
     SingleOrg = 3,
-    RequireSso = 4,
+    // RequireSso = 4, // Not supported
     PersonalOwnership = 5,
     DisableSend = 6,
     SendOptions = 7,
@@ -76,12 +76,11 @@ impl OrgPolicy {
     }
 
     pub fn to_json(&self) -> Value {
-        let data_json: Value = serde_json::from_str(&self.data).unwrap_or(Value::Null);
         json!({
             "Id": self.uuid,
             "OrganizationId": self.org_uuid,
             "Type": self.atype,
-            "Data": data_json,
+            "Data": serde_json::from_str(&self.data).unwrap_or(Value::Null),
             "Enabled": self.enabled,
             "Object": "policy",
         })
