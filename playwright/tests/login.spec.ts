@@ -3,14 +3,12 @@ const utils = require('../global-utils');
 
 utils.loadEnv();
 
-var proc;
-
 test.beforeAll('Setup', async ({ browser }, testInfo: TestInfo) => {
-    proc = await utils.startVaultwarden(browser, testInfo, {});
+    await utils.startVaultwarden(browser, testInfo, {});
 });
 
 test.afterAll('Teardown', async ({}, testInfo: TestInfo) => {
-    utils.stopVaultwarden(proc, testInfo);
+    utils.stopVaultwarden(testInfo);
 });
 
 test('Account creation', async ({ page }) => {
