@@ -617,7 +617,7 @@ make_config! {
         /// CallBack Path
         sso_callback_path:      String, false,  gen,    |c| generate_sso_callback_path(&c.domain);
         /// Allow workaround so SSO logins accept all invites
-        sso_acceptall_invites: bool, true,   def,     false;
+        sso_acceptall_invites:  bool,   true,   def,     false;
     },
 
     /// Yubikey settings
@@ -774,10 +774,13 @@ fn validate_config(cfg: &ConfigItems) -> Result<(), Error> {
         err!("All Duo options need to be set for global Duo support")
     }
 
-    if cfg.sso_enabled
-        && (cfg.sso_client_id.is_empty() || cfg.sso_client_secret.is_empty() || cfg.sso_authority.is_empty())
-    {
-        err!("`SSO_CLIENT_ID`, `SSO_CLIENT_SECRET` and `SSO_AUTHORITY` must be set for SSO support")
+    if cfg.sso_enabled {
+        if cfg.sso_client_id.is_empty() || cfg.sso_client_secret.is_empty() || cfg.sso_authority.is_empty() {
+            err!("`SSO_CLIENT_ID`, `SSO_CLIENT_SECRET` and `SSO_AUTHORITY` must be set for SSO support")
+        }
+
+        internal_sso_issuer_url(&cfg.sso_authority)?;
+        internal_sso_redirect_url(&cfg.sso_callback_path)?;
     }
 
     if cfg._enable_yubico {
@@ -943,6 +946,20 @@ fn validate_config(cfg: &ConfigItems) -> Result<(), Error> {
         }
     }
     Ok(())
+}
+
+fn internal_sso_issuer_url(sso_authority: &String) -> Result<openidconnect::IssuerUrl, Error> {
+    match openidconnect::IssuerUrl::new(sso_authority.clone()) {
+        Err(err) => err!(format!("Invalid sso_authority UR ({sso_authority}): {err}")),
+        Ok(issuer_url) => Ok(issuer_url),
+    }
+}
+
+fn internal_sso_redirect_url(sso_callback_path: &String) -> Result<openidconnect::RedirectUrl, Error> {
+    match openidconnect::RedirectUrl::new(sso_callback_path.clone()) {
+        Err(err) => err!(format!("Invalid sso_callback_path ({sso_callback_path} built using `domain`) URL: {err}")),
+        Ok(redirect_url) => Ok(redirect_url),
+    }
 }
 
 /// Extracts an RFC 6454 web origin from a URL.
@@ -1222,6 +1239,14 @@ impl Config {
                 handle.notify();
             }
         }
+    }
+
+    pub fn sso_issuer_url(&self) -> Result<openidconnect::IssuerUrl, Error> {
+        internal_sso_issuer_url(&self.sso_authority())
+    }
+
+    pub fn sso_redirect_url(&self) -> Result<openidconnect::RedirectUrl, Error> {
+        internal_sso_redirect_url(&self.sso_callback_path())
     }
 }
 

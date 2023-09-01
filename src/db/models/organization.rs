@@ -166,7 +166,7 @@ impl Organization {
             "UseTotp": true,
             "UsePolicies": true,
             // "UseScim": false, // Not supported (Not AGPLv3 Licensed)
-            "UseSso": CONFIG.sso_enabled(),
+            "UseSso": false, // Not supported
             // "UseKeyConnector": false, // Not supported
             "SelfHost": true,
             "UseApi": true,
@@ -346,7 +346,7 @@ impl UserOrganization {
             "ResetPasswordEnrolled": self.reset_password_key.is_some(),
             "UseResetPassword": CONFIG.mail_enabled(),
             "SsoBound": false, // Not supported
-            "UseSso": CONFIG.sso_enabled(),
+            "UseSso": false, // Not supported
             "ProviderId": null,
             "ProviderName": null,
             // "KeyConnectorEnabled": false,

@@ -308,6 +308,7 @@ async fn get_user_collections(headers: Headers, mut conn: DbConn) -> Json<Value>
     }))
 }
 
+// Called during the SSO enrollement
 #[get("/organizations/<_identifier>/auto-enroll-status")]
 fn get_auto_enroll_status(_identifier: String) -> JsonResult {
     Ok(Json(json!({
@@ -792,6 +793,9 @@ async fn _get_org_details(org_id: &str, host: &str, user_uuid: &str, conn: &mut 
     json!(ciphers_json)
 }
 
+// Endpoint called when the user select SSO login (body: `{ "email": "" }`).
+// Returning a Domain/Organization here allow to prefill it and prevent prompting the user
+// VaultWarden sso login is not linked to Org so we set a dummy value.
 #[post("/organizations/domain/sso/details")]
 fn get_org_domain_sso_details() -> JsonResult {
     Ok(Json(json!({
@@ -1679,17 +1683,22 @@ async fn list_policies_token(org_id: &str, token: &str, mut conn: DbConn) -> Jso
     })))
 }
 
+// Called during the SSO enrollement.
+// Since the VW SSO flow is not linked to an organization it will be called with a dummy or undefinned `org_id`
 #[allow(non_snake_case)]
 #[get("/organizations/<org_id>/policies/invited-user?<userId>")]
 async fn list_policies_invited_user(org_id: String, userId: String, mut conn: DbConn) -> JsonResult {
-    // We should confirm the user is part of the organization, but unique domain_hints must be supported first.
-
     if userId.is_empty() {
         err!("userId must not be empty");
     }
 
-    let policies = OrgPolicy::find_by_org(&org_id, &mut conn).await;
-    let policies_json: Vec<Value> = policies.iter().map(OrgPolicy::to_json).collect();
+    let user_orgs = UserOrganization::find_invited_by_user(&userId, &mut conn).await;
+    let policies_json: Vec<Value> = if user_orgs.into_iter().any(|user_org| user_org.org_uuid == org_id) {
+        let policies = OrgPolicy::find_by_org(&org_id, &mut conn).await;
+        policies.iter().map(OrgPolicy::to_json).collect()
+    } else {
+        vec![]
+    };
 
     Ok(Json(json!({
         "Data": policies_json,

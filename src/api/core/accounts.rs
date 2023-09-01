@@ -101,13 +101,6 @@ struct KeysData {
     PublicKey: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct TokenPayload {
-    exp: i64,
-    email: String,
-    nonce: String,
-}
-
 /// Trims whitespace from password hints, and converts blank password hints to `None`.
 fn clean_password_hint(password_hint: &Option<String>) -> Option<String> {
     match password_hint {
