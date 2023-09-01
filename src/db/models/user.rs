@@ -85,7 +85,7 @@ impl User {
     pub const CLIENT_KDF_TYPE_DEFAULT: i32 = UserKdfType::Pbkdf2 as i32;
     pub const CLIENT_KDF_ITER_DEFAULT: i32 = 600_000;
 
-    pub fn new(email: String) -> Self {
+    pub fn new(email: String, name: Option<String>) -> Self {
         let now = Utc::now().naive_utc();
         let email = email.to_lowercase();
 
@@ -97,7 +97,7 @@ impl User {
             verified_at: None,
             last_verifying_at: None,
             login_verify_count: 0,
-            name: email.clone(),
+            name: name.unwrap_or(email.clone()),
             email,
             akey: String::new(),
             email_new: None,

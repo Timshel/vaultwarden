@@ -1,10 +1,9 @@
-use chrono::Utc;
-use jsonwebtoken::DecodingKey;
+use chrono::{NaiveDateTime, Utc};
 use num_traits::FromPrimitive;
 use rocket::serde::json::Json;
 use rocket::{
     form::{Form, FromForm},
-    http::CookieJar,
+    http::{Cookie, CookieJar, Status},
     Route,
 };
 use serde_json::Value;
@@ -12,23 +11,24 @@ use serde_json::Value;
 use crate::{
     api::{
         core::{
-            accounts::{PreloginData, RegisterData, _prelogin, _register},
+            accounts::{PreloginData, RegisterData, _prelogin, _register, kdf_upgrade},
             log_user_event,
             two_factor::{authenticator, duo, email, enforce_2fa_policy, webauthn, yubikey},
         },
         push::register_push_device,
         ApiResult, EmptyResult, JsonResult, JsonUpcase,
     },
-    auth::{encode_jwt, generate_organization_api_key_login_claims, generate_ssotoken_claims, ClientHeaders, ClientIp},
+    auth,
+    auth::{AuthMethod, AuthMethodScope, ClientHeaders, ClientIp},
     db::{models::*, DbConn},
     error::MapResult,
-    mail, util,
-    util::{CookieManager, CustomRedirect},
+    mail, sso, util,
+    util::CustomRedirect,
     CONFIG,
 };
 
 pub fn routes() -> Vec<Route> {
-    routes![login, prelogin, identity_register, prevalidate, authorize, oidcsignin]
+    routes![login, prelogin, identity_register, prevalidate, authorize, oidcsignin, oidcsignin_error]
 }
 
 #[post("/connect/token", data = "<data>")]
@@ -72,7 +72,8 @@ async fn login(data: Form<ConnectData>, client_header: ClientHeaders, mut conn: 
             _check_is_some(&data.device_identifier, "device_identifier cannot be blank")?;
             _check_is_some(&data.device_name, "device_name cannot be blank")?;
             _check_is_some(&data.device_type, "device_type cannot be blank")?;
-            _authorization_login(data, &mut user_uuid, &mut conn, &client_header.ip).await
+
+            _sso_login(data, &mut user_uuid, &mut conn, &client_header.ip).await
         }
         t => err!("Invalid type", t),
     };
@@ -107,180 +108,100 @@ async fn login(data: Form<ConnectData>, client_header: ClientHeaders, mut conn: 
     login_result
 }
 
+// Return Status::Unauthorized to trigger logout
 async fn _refresh_login(data: ConnectData, conn: &mut DbConn) -> JsonResult {
     // Extract token
-    let token = data.refresh_token.unwrap();
+    let refresh_token = match data.refresh_token {
+        Some(token) => token,
+        None => err_code!("Missing refresh_token", Status::Unauthorized.code),
+    };
 
-    // Get device by refresh token
-    let mut device = Device::find_by_refresh_token(&token, conn).await.map_res("Invalid refresh token")?;
-
-    let scope = "api offline_access";
-    let scope_vec = vec!["api".into(), "offline_access".into()];
-
-    // Common
-    let user = User::find_by_uuid(&device.user_uuid, conn).await.unwrap();
     // ---
     // Disabled this variable, it was used to generate the JWT
     // Because this might get used in the future, and is add by the Bitwarden Server, lets keep it, but then commented out
     // See: https://github.com/dani-garcia/vaultwarden/issues/4156
     // ---
     // let orgs = UserOrganization::find_confirmed_by_user(&user.uuid, conn).await;
-    let (access_token, expires_in) = device.refresh_tokens(&user, scope_vec);
-    device.save(conn).await?;
+    match auth::refresh_tokens(&refresh_token, conn).await {
+        Err(err) => err_code!(err.to_string(), Status::Unauthorized.code),
+        Ok((mut device, user, auth_tokens)) => {
+            // Save to update `device.updated_at` to track usage
+            device.save(conn).await?;
 
-    let result = json!({
-        "access_token": access_token,
-        "expires_in": expires_in,
-        "token_type": "Bearer",
-        "refresh_token": device.refresh_token,
-        "Key": user.akey,
-        "PrivateKey": user.private_key,
+            let result = json!({
+                "refresh_token": auth_tokens.refresh_token(),
+                "access_token": auth_tokens.access_token(),
+                "expires_in": auth_tokens.expires_in(),
+                "token_type": "Bearer",
+                "Key": user.akey,
+                "PrivateKey": user.private_key,
 
-        "Kdf": user.client_kdf_type,
-        "KdfIterations": user.client_kdf_iter,
-        "KdfMemory": user.client_kdf_memory,
-        "KdfParallelism": user.client_kdf_parallelism,
-        "ResetMasterPassword": false, // TODO: according to official server seems something like: user.password_hash.is_empty(), but would need testing
-        "scope": scope,
-        "unofficialServer": true,
-    });
+                "Kdf": user.client_kdf_type,
+                "KdfIterations": user.client_kdf_iter,
+                "KdfMemory": user.client_kdf_memory,
+                "KdfParallelism": user.client_kdf_parallelism,
+                "ResetMasterPassword": false, // TODO: according to official server seems something like: user.password_hash.is_empty(), but would need testing
+                "scope": auth_tokens.scope(),
+                "unofficialServer": true,
+            });
 
-    Ok(Json(result))
+            Ok(Json(result))
+        }
+    }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct TokenPayload {
-    exp: i64,
-    email: Option<String>,
-    nonce: String,
-}
-
-async fn _authorization_login(
-    data: ConnectData,
-    user_uuid: &mut Option<String>,
-    conn: &mut DbConn,
-    ip: &ClientIp,
-) -> JsonResult {
-    let scope = match data.scope.as_ref() {
-        None => err!("Got no scope in OIDC data"),
-        Some(scope) => scope,
-    };
-    if scope != "api offline_access" {
-        err!("Scope not supported")
+// After exchanging the code we need to check first if 2FA is needed before continuing
+async fn _sso_login(data: ConnectData, user_uuid: &mut Option<String>, conn: &mut DbConn, ip: &ClientIp) -> JsonResult {
+    if !CONFIG.sso_enabled() {
+        err!("SSO sign-in is disabled");
     }
 
-    let scope_vec = vec!["api".into(), "offline_access".into()];
+    AuthMethod::Sso.check_scope(data.scope.as_ref())?;
+
+    // Ratelimit the login
+    crate::ratelimit::check_limit_login(&ip.ip)?;
+
     let code = match data.code.as_ref() {
         None => err!("Got no code in OIDC data"),
         Some(code) => code,
     };
 
-    let (refresh_token, id_token, user_info) = match get_auth_code_access_token(code).await {
-        Ok((refresh_token, id_token, user_info)) => (refresh_token, id_token, user_info),
-        Err(_err) => err!("Could not retrieve access token"),
+    let user_infos = sso::exchange_code(code).await?;
+
+    // Will trigger 2FA flow if needed
+    let user_data = match User::find_by_mail(user_infos.email.as_str(), conn).await {
+        None => None,
+        Some(user) => {
+            let (mut device, new_device) = get_device(&data, conn, &user).await?;
+            let twofactor_token = twofactor_auth(&user, &data, &mut device, ip, conn).await?;
+
+            Some((user, device, new_device, twofactor_token))
+        }
     };
 
-    let mut validation = jsonwebtoken::Validation::default();
-    validation.insecure_disable_signature_validation();
+    // We passed 2FA get full user informations
+    let auth_user = sso::redeem(code, conn).await?;
 
-    let token =
-        match jsonwebtoken::decode::<TokenPayload>(id_token.as_str(), &DecodingKey::from_secret(&[]), &validation) {
-            Err(_err) => err!("Could not decode id token"),
-            Ok(payload) => payload.claims,
-        };
-
-    // let expiry = token.exp;
-    let nonce = token.nonce;
-    let mut new_user = false;
-
-    match SsoNonce::find(&nonce, conn).await {
-        Some(sso_nonce) => {
-            match sso_nonce.delete(conn).await {
-                Ok(_) => {
-                    let user_email = match token.email {
-                        Some(email) => email,
-                        None => match user_info.email() {
-                            None => err!("Neither id token nor userinfo contained an email"),
-                            Some(email) => email.to_owned().to_string(),
-                        },
-                    };
-                    let now = Utc::now().naive_utc();
-
-                    let mut user = match User::find_by_mail(&user_email, conn).await {
-                        Some(user) => user,
-                        None => {
-                            new_user = true;
-                            User::new(user_email.clone())
-                        }
-                    };
-
-                    if new_user {
-                        user.verified_at = Some(Utc::now().naive_utc());
-                        user.save(conn).await?;
-                    }
-
-                    // Set the user_uuid here to be passed back used for event logging.
-                    *user_uuid = Some(user.uuid.clone());
-
-                    let (mut device, new_device) = get_device(&data, conn, &user).await;
-
-                    let twofactor_token = twofactor_auth(&user, &data, &mut device, ip, true, conn).await?;
-
-                    if CONFIG.mail_enabled() && new_device {
-                        if let Err(e) =
-                            mail::send_new_device_logged_in(&user.email, &ip.ip.to_string(), &now, &device.name).await
-                        {
-                            error!("Error sending new device email: {:#?}", e);
-
-                            if CONFIG.require_device_email() {
-                                err!("Could not send login notification email. Please contact your administrator.")
-                            }
-                        }
-                    }
-
-                    if CONFIG.sso_acceptall_invites() {
-                        for user_org in UserOrganization::find_invited_by_user(&user.uuid, conn).await.iter_mut() {
-                            user_org.status = UserOrgStatus::Accepted as i32;
-                            user_org.save(conn).await?;
-                        }
-                    }
-
-                    device.refresh_token = refresh_token.clone();
-                    device.save(conn).await?;
-
-                    let (access_token, expires_in) = device.refresh_tokens(&user, scope_vec);
-                    device.save(conn).await?;
-
-                    let mut result = json!({
-                        "access_token": access_token,
-                        "token_type": "Bearer",
-                        "refresh_token": device.refresh_token,
-                        "expires_in": expires_in,
-                        "Key": user.akey,
-                        "PrivateKey": user.private_key,
-                        "Kdf": user.client_kdf_type,
-                        "KdfIterations": user.client_kdf_iter,
-                        "KdfMemory": user.client_kdf_memory,
-                        "KdfParallelism": user.client_kdf_parallelism,
-                        "ResetMasterPassword": user.password_hash.is_empty(),
-                        "scope": scope,
-                        "unofficialServer": true,
-                    });
-
-                    if let Some(token) = twofactor_token {
-                        result["TwoFactorToken"] = Value::String(token);
-                    }
-
-                    info!("User {} logged in successfully. IP: {}", user.email, ip.ip);
-                    Ok(Json(result))
-                }
-                Err(_) => err!("Failed to delete nonce"),
-            }
-        }
+    let now = Utc::now().naive_utc();
+    let (user, mut device, new_device, twofactor_token) = match user_data {
+        Some(data) => data,
         None => {
-            err!("Invalid nonce")
+            let mut user = User::new(user_infos.email, user_infos.user_name);
+            user.verified_at = Some(now);
+            user.save(conn).await?;
+
+            let (device, new_device) = get_device(&data, conn, &user).await?;
+
+            (user, device, new_device, None)
         }
-    }
+    };
+
+    // Set the user_uuid here to be passed back used for event logging.
+    *user_uuid = Some(user.uuid.clone());
+
+    let auth_tokens = sso::create_auth_tokens(&device, &user, auth_user.refresh_token, &auth_user.access_token)?;
+
+    authenticated_response(&user, &mut device, new_device, auth_tokens, twofactor_token, &now, conn, ip).await
 }
 
 async fn _password_login(
@@ -289,19 +210,15 @@ async fn _password_login(
     conn: &mut DbConn,
     ip: &ClientIp,
 ) -> JsonResult {
-    // Validate scope
-    let scope = data.scope.as_ref().unwrap();
-    if scope != "api offline_access" {
-        err!("Scope not supported")
-    }
-    let scope_vec = vec!["api".into(), "offline_access".into()];
-
-    // Ratelimit the login
-    crate::ratelimit::check_limit_login(&ip.ip)?;
-
     if CONFIG.sso_enabled() && CONFIG.sso_only() {
         err!("SSO sign-in is required");
     }
+
+    // Validate scope
+    AuthMethod::Password.check_scope(data.scope.as_ref())?;
+
+    // Ratelimit the login
+    crate::ratelimit::check_limit_login(&ip.ip)?;
 
     // Get the user
     let username = data.username.as_ref().unwrap().trim();
@@ -345,15 +262,7 @@ async fn _password_login(
         )
     }
 
-    // Change the KDF Iterations
-    if user.password_iterations != CONFIG.password_iterations() {
-        user.password_iterations = CONFIG.password_iterations();
-        user.set_password(password, None, false, None);
-
-        if let Err(e) = user.save(conn).await {
-            error!("Error updating user: {:#?}", e);
-        }
-    }
+    kdf_upgrade(&mut user, password, conn).await?;
 
     // Check if the user is disabled
     if !user.enabled {
@@ -400,12 +309,28 @@ async fn _password_login(
         )
     }
 
-    let (mut device, new_device) = get_device(&data, conn, &user).await;
+    let (mut device, new_device) = get_device(&data, conn, &user).await?;
 
-    let twofactor_token = twofactor_auth(&user, &data, &mut device, ip, false, conn).await?;
+    let twofactor_token = twofactor_auth(&user, &data, &mut device, ip, conn).await?;
 
+    let auth_tokens = auth::AuthTokens::new(&device, &user, AuthMethod::Password);
+
+    authenticated_response(&user, &mut device, new_device, auth_tokens, twofactor_token, &now, conn, ip).await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn authenticated_response(
+    user: &User,
+    device: &mut Device,
+    new_device: bool,
+    auth_tokens: auth::AuthTokens,
+    twofactor_token: Option<String>,
+    now: &NaiveDateTime,
+    conn: &mut DbConn,
+    ip: &ClientIp,
+) -> JsonResult {
     if CONFIG.mail_enabled() && new_device {
-        if let Err(e) = mail::send_new_device_logged_in(&user.email, &ip.ip.to_string(), &now, &device.name).await {
+        if let Err(e) = mail::send_new_device_logged_in(&user.email, &ip.ip.to_string(), now, &device.name).await {
             error!("Error sending new device email: {:#?}", e);
 
             if CONFIG.require_device_email() {
@@ -419,36 +344,42 @@ async fn _password_login(
         }
     }
 
-    // register push device
-    if !new_device {
-        register_push_device(&mut device, conn).await?;
+    if CONFIG.sso_enabled() && CONFIG.sso_acceptall_invites() {
+        for user_org in UserOrganization::find_invited_by_user(&user.uuid, conn).await.iter_mut() {
+            user_org.status = UserOrgStatus::Accepted as i32;
+            user_org.save(conn).await?;
+
+            if CONFIG.mail_enabled() {
+                if let Some(org) = Organization::find_by_uuid(&user_org.org_uuid, conn).await {
+                    if let Some(invited_by) = &user_org.invited_by_email {
+                        mail::send_invite_accepted(&user.email, invited_by, &org.name).await?;
+                    }
+                }
+            }
+        }
     }
 
-    // Common
-    // ---
-    // Disabled this variable, it was used to generate the JWT
-    // Because this might get used in the future, and is add by the Bitwarden Server, lets keep it, but then commented out
-    // See: https://github.com/dani-garcia/vaultwarden/issues/4156
-    // ---
-    // let orgs = UserOrganization::find_confirmed_by_user(&user.uuid, conn).await;
-    let (access_token, expires_in) = device.refresh_tokens(&user, scope_vec);
+    // register push device
+    if !new_device {
+        register_push_device(device, conn).await?;
+    }
+
+    // Save to update `device.updated_at` to track usage
     device.save(conn).await?;
 
     let mut result = json!({
-        "access_token": access_token,
-        "expires_in": expires_in,
+        "access_token": auth_tokens.access_token(),
+        "expires_in": auth_tokens.expires_in(),
         "token_type": "Bearer",
-        "refresh_token": device.refresh_token,
+        "refresh_token": auth_tokens.refresh_token(),
         "Key": user.akey,
         "PrivateKey": user.private_key,
-        //"TwoFactorToken": "11122233333444555666777888999"
-
         "Kdf": user.client_kdf_type,
         "KdfIterations": user.client_kdf_iter,
         "KdfMemory": user.client_kdf_memory,
         "KdfParallelism": user.client_kdf_parallelism,
         "ResetMasterPassword": false,// TODO: Same as above
-        "scope": scope,
+        "scope": auth_tokens.scope(),
         "unofficialServer": true,
         "UserDecryptionOptions": {
             "HasMasterPassword": !user.password_hash.is_empty(),
@@ -460,7 +391,7 @@ async fn _password_login(
         result["TwoFactorToken"] = Value::String(token);
     }
 
-    info!("User {} logged in successfully. IP: {}", username, ip.ip);
+    info!("User {} logged in successfully. IP: {}", user.email, ip.ip);
     Ok(Json(result))
 }
 
@@ -474,9 +405,9 @@ async fn _api_key_login(
     crate::ratelimit::check_limit_login(&ip.ip)?;
 
     // Validate scope
-    match data.scope.as_ref().unwrap().as_ref() {
-        "api" => _user_api_key_login(data, user_uuid, conn, ip).await,
-        "api.organization" => _organization_api_key_login(data, conn, ip).await,
+    match data.scope.as_ref() {
+        Some(scope) if scope == &AuthMethod::UserApiKey.scope() => _user_api_key_login(data, user_uuid, conn, ip).await,
+        Some(scope) if scope == &AuthMethod::OrgApiKey.scope() => _organization_api_key_login(data, conn, ip).await,
         _ => err!("Scope not supported"),
     }
 }
@@ -524,7 +455,7 @@ async fn _user_api_key_login(
         )
     }
 
-    let (mut device, new_device) = get_device(&data, conn, &user).await;
+    let (mut device, new_device) = get_device(&data, conn, &user).await?;
 
     if CONFIG.mail_enabled() && new_device {
         let now = Utc::now().naive_utc();
@@ -542,15 +473,15 @@ async fn _user_api_key_login(
         }
     }
 
-    // Common
-    let scope_vec = vec!["api".into()];
     // ---
     // Disabled this variable, it was used to generate the JWT
     // Because this might get used in the future, and is add by the Bitwarden Server, lets keep it, but then commented out
     // See: https://github.com/dani-garcia/vaultwarden/issues/4156
     // ---
     // let orgs = UserOrganization::find_confirmed_by_user(&user.uuid, conn).await;
-    let (access_token, expires_in) = device.refresh_tokens(&user, scope_vec);
+    let access_claims = auth::LoginJwtClaims::default(&device, &user, &auth::AuthMethod::UserApiKey);
+
+    // Save to update `device.updated_at` to track usage
     device.save(conn).await?;
 
     info!("User {} logged in successfully via API key. IP: {}", user.email, ip.ip);
@@ -558,8 +489,8 @@ async fn _user_api_key_login(
     // Note: No refresh_token is returned. The CLI just repeats the
     // client_credentials login flow when the existing token expires.
     let result = json!({
-        "access_token": access_token,
-        "expires_in": expires_in,
+        "access_token": access_claims.token(),
+        "expires_in": access_claims.expires_in(),
         "token_type": "Bearer",
         "Key": user.akey,
         "PrivateKey": user.private_key,
@@ -569,7 +500,7 @@ async fn _user_api_key_login(
         "KdfMemory": user.client_kdf_memory,
         "KdfParallelism": user.client_kdf_parallelism,
         "ResetMasterPassword": false, // TODO: Same as above
-        "scope": "api",
+        "scope": auth::AuthMethod::UserApiKey.scope(),
         "unofficialServer": true,
     });
 
@@ -594,20 +525,20 @@ async fn _organization_api_key_login(data: ConnectData, conn: &mut DbConn, ip: &
         err!("Incorrect client_secret", format!("IP: {}. Organization: {}.", ip.ip, org_api_key.org_uuid))
     }
 
-    let claim = generate_organization_api_key_login_claims(org_api_key.uuid, org_api_key.org_uuid);
-    let access_token = crate::auth::encode_jwt(&claim);
+    let claim = auth::generate_organization_api_key_login_claims(org_api_key.uuid, org_api_key.org_uuid);
+    let access_token = auth::encode_jwt(&claim);
 
     Ok(Json(json!({
         "access_token": access_token,
         "expires_in": 3600,
         "token_type": "Bearer",
-        "scope": "api.organization",
+        "scope": auth::AuthMethod::OrgApiKey.scope(),
         "unofficialServer": true,
     })))
 }
 
 /// Retrieves an existing device or creates a new device from ConnectData and the User
-async fn get_device(data: &ConnectData, conn: &mut DbConn, user: &User) -> (Device, bool) {
+async fn get_device(data: &ConnectData, conn: &mut DbConn, user: &User) -> ApiResult<(Device, bool)> {
     // On iOS, device_type sends "iOS", on others it sends a number
     // When unknown or unable to parse, return 14, which is 'Unknown Browser'
     let device_type = util::try_parse_string(data.device_type.as_ref()).unwrap_or(14);
@@ -619,12 +550,13 @@ async fn get_device(data: &ConnectData, conn: &mut DbConn, user: &User) -> (Devi
     let device = match Device::find_by_uuid_and_user(&device_id, &user.uuid, conn).await {
         Some(device) => device,
         None => {
+            let device = Device::new(device_id, user.uuid.clone(), device_name, device_type);
             new_device = true;
-            Device::new(device_id, user.uuid.clone(), device_name, device_type)
+            device
         }
     };
 
-    (device, new_device)
+    Ok((device, new_device))
 }
 
 async fn twofactor_auth(
@@ -632,7 +564,6 @@ async fn twofactor_auth(
     data: &ConnectData,
     device: &mut Device,
     ip: &ClientIp,
-    is_sso: bool,
     conn: &mut DbConn,
 ) -> ApiResult<Option<String>> {
     let twofactors = TwoFactor::find_by_user(&user.uuid, conn).await;
@@ -650,17 +581,7 @@ async fn twofactor_auth(
 
     let twofactor_code = match data.two_factor_token {
         Some(ref code) => code,
-        None => {
-            if is_sso {
-                if CONFIG.sso_only() {
-                    err!("2FA not supported with SSO login, contact your administrator");
-                } else {
-                    err!("2FA not supported with SSO login, log in directly using email and master password");
-                }
-            } else {
-                err_json!(_json_err_twofactor(&twofactor_ids, &user.uuid, conn).await?, "2FA token not provided");
-            }
-        }
+        None => err_json!(_json_err_twofactor(&twofactor_ids, &user.uuid, conn).await?, "2FA token not provided"),
     };
 
     let selected_twofactor = twofactors.into_iter().find(|tf| tf.atype == selected_id && tf.enabled);
@@ -676,9 +597,7 @@ async fn twofactor_auth(
         }
         Some(TwoFactorType::Webauthn) => webauthn::validate_webauthn_login(&user.uuid, twofactor_code, conn).await?,
         Some(TwoFactorType::YubiKey) => yubikey::validate_yubikey_login(twofactor_code, &selected_data?).await?,
-        Some(TwoFactorType::Duo) => {
-            duo::validate_duo_login(data.username.as_ref().unwrap().trim(), twofactor_code, conn).await?
-        }
+        Some(TwoFactorType::Duo) => duo::validate_duo_login(&user.email, twofactor_code, conn).await?,
         Some(TwoFactorType::Email) => {
             email::validate_email_code_str(&user.uuid, twofactor_code, &selected_data?, conn).await?
         }
@@ -706,12 +625,13 @@ async fn twofactor_auth(
 
     TwoFactorIncomplete::mark_complete(&user.uuid, &device.uuid, conn).await?;
 
-    if !CONFIG.disable_2fa_remember() && remember == 1 {
-        Ok(Some(device.refresh_twofactor_remember()))
+    let two_factor = if !CONFIG.disable_2fa_remember() && remember == 1 {
+        Some(device.refresh_twofactor_remember())
     } else {
         device.delete_twofactor_remember();
-        Ok(None)
-    }
+        None
+    };
+    Ok(two_factor)
 }
 
 fn _selected_data(tf: Option<TwoFactor>) -> ApiResult<String> {
@@ -864,175 +784,90 @@ fn _check_is_some<T>(value: &Option<T>, msg: &str) -> EmptyResult {
 }
 
 #[get("/account/prevalidate")]
-#[allow(non_snake_case)]
 fn prevalidate() -> JsonResult {
-    let claims = generate_ssotoken_claims();
-    let ssotoken = encode_jwt(&claims);
+    let claims = auth::generate_ssotoken_claims();
+    let sso_token = auth::encode_jwt(&claims);
     Ok(Json(json!({
-        "token": ssotoken,
+        "token": sso_token,
     })))
 }
 
-use openidconnect::core::{CoreClient, CoreProviderMetadata, CoreResponseType, CoreUserInfoClaims};
-use openidconnect::reqwest::async_http_client;
-use openidconnect::{
-    AuthenticationFlow, AuthorizationCode, ClientId, ClientSecret, CsrfToken, IssuerUrl, Nonce, OAuth2TokenResponse,
-    RedirectUrl, Scope,
-};
-
-async fn get_client_from_sso_config() -> ApiResult<CoreClient> {
-    let redirect = CONFIG.sso_callback_path();
-    let client_id = ClientId::new(CONFIG.sso_client_id());
-    let client_secret = ClientSecret::new(CONFIG.sso_client_secret());
-    let issuer_url = match IssuerUrl::new(CONFIG.sso_authority()) {
-        Ok(issuer) => issuer,
-        Err(_err) => err!("invalid issuer URL"),
-    };
-
-    let provider_metadata = match CoreProviderMetadata::discover_async(issuer_url, async_http_client).await {
-        Ok(metadata) => metadata,
-        Err(_err) => {
-            err!("Failed to discover OpenID provider")
-        }
-    };
-
-    let redirect_uri = match RedirectUrl::new(redirect) {
-        Ok(uri) => uri,
-        Err(err) => err!("Invalid redirection url: {}", err.to_string()),
-    };
-    let client = CoreClient::from_provider_metadata(provider_metadata, client_id, Some(client_secret))
-        .set_redirect_uri(redirect_uri);
-
-    Ok(client)
-}
-
-#[get("/connect/oidc-signin?<code>")]
-fn oidcsignin(code: String, jar: &CookieJar<'_>, _conn: DbConn) -> ApiResult<CustomRedirect> {
-    let cookiemanager = CookieManager::new(jar);
-
-    let redirect_uri = match cookiemanager.get_cookie("redirect_uri".to_string()) {
-        None => err!("No redirect_uri in cookie"),
-        Some(uri) => uri,
-    };
-    let orig_state = match cookiemanager.get_cookie("state".to_string()) {
-        None => err!("No state in cookie"),
-        Some(state) => state,
-    };
-
-    cookiemanager.delete_cookie("redirect_uri".to_string());
-    cookiemanager.delete_cookie("state".to_string());
+#[get("/connect/oidc-signin?<code>&<state>", rank = 1)]
+fn oidcsignin(code: String, state: String, jar: &CookieJar<'_>) -> ApiResult<CustomRedirect> {
+    let redirect_uri = jar
+        .get(&sso::COOKIE_NAME_REDIRECT.to_string())
+        .map(|c| c.value().to_string())
+        .unwrap_or(format!("{}/sso-connector.html", CONFIG.domain()));
 
     let redirect = CustomRedirect {
-        url: format!("{redirect_uri}?code={code}&state={orig_state}"),
-        headers: vec![],
+        url: format!("{}?code={code}&state={state}", redirect_uri),
+        headers: Vec::with_capacity(0),
     };
 
     Ok(redirect)
 }
 
-#[derive(FromForm)]
-#[allow(non_snake_case)]
+// No good way to display the error
+// Bitwarden client appear to only care for code and state
+// cf: https://github.com/bitwarden/clients/blob/8e46ef1ae5be8b62b0d3d0b9d1b1c62088a04638/libs/angular/src/auth/components/sso.component.ts#L68C11-L68C23)
+#[get("/connect/oidc-signin?<error>&<error_description>", rank = 2)]
+fn oidcsignin_error(error: String, error_description: Option<String>) -> ApiResult<CustomRedirect> {
+    if CONFIG.sso_auth_failure_silent() {
+        warn!("SSO login failed with {error} and {:?}", error_description);
+        Ok(CustomRedirect {
+            url: format!("/#?error={error}"),
+            headers: Vec::with_capacity(0),
+        })
+    } else {
+        err!(format!("SSO login failed with {error} and {:?}", error_description));
+    }
+}
+
+#[derive(Debug, Clone, Default, FromForm)]
 struct AuthorizeData {
     #[allow(unused)]
-    #[field(name = uncased("client_id"))]
-    #[field(name = uncased("clientid"))]
     client_id: Option<String>,
     #[field(name = uncased("redirect_uri"))]
     #[field(name = uncased("redirecturi"))]
-    redirect_uri: Option<String>,
+    redirect_uri: String,
     #[allow(unused)]
-    #[field(name = uncased("response_type"))]
-    #[field(name = uncased("responsetype"))]
     response_type: Option<String>,
     #[allow(unused)]
-    #[field(name = uncased("scope"))]
     scope: Option<String>,
-    #[field(name = uncased("state"))]
-    state: Option<String>,
+    state: String,
     #[allow(unused)]
-    #[field(name = uncased("code_challenge"))]
     code_challenge: Option<String>,
     #[allow(unused)]
-    #[field(name = uncased("code_challenge_method"))]
     code_challenge_method: Option<String>,
     #[allow(unused)]
-    #[field(name = uncased("response_mode"))]
     response_mode: Option<String>,
     #[allow(unused)]
-    #[field(name = uncased("domain_hint"))]
     domain_hint: Option<String>,
     #[allow(unused)]
     #[field(name = uncased("ssoToken"))]
-    ssoToken: Option<String>,
+    sso_token: Option<String>,
 }
 
+// The `redirect_uri` will change depending of the client (web, android, ios ..)
 #[get("/connect/authorize?<data..>")]
-async fn authorize(data: AuthorizeData, jar: &CookieJar<'_>, mut conn: DbConn) -> ApiResult<CustomRedirect> {
-    let cookiemanager = CookieManager::new(jar);
-    match get_client_from_sso_config().await {
-        Ok(client) => {
-            let (auth_url, _csrf_state, nonce) = client
-                .authorize_url(
-                    AuthenticationFlow::<CoreResponseType>::AuthorizationCode,
-                    CsrfToken::new_random,
-                    Nonce::new_random,
-                )
-                .add_scope(Scope::new("email".to_string()))
-                .add_scope(Scope::new("profile".to_string()))
-                .url();
+async fn authorize(data: AuthorizeData, jar: &CookieJar<'_>, conn: DbConn) -> ApiResult<CustomRedirect> {
+    let AuthorizeData {
+        redirect_uri,
+        state,
+        ..
+    } = data;
 
-            let sso_nonce = SsoNonce::new(nonce.secret().to_string());
-            sso_nonce.save(&mut conn).await?;
+    let cookie = Cookie::build((sso::COOKIE_NAME_REDIRECT.to_string(), redirect_uri))
+        .max_age(rocket::time::Duration::minutes(5))
+        .same_site(rocket::http::SameSite::Lax)
+        .http_only(true);
 
-            let redirect_uri = match data.redirect_uri {
-                None => err!("No redirect_uri in data"),
-                Some(uri) => uri,
-            };
-            cookiemanager.set_cookie("redirect_uri".to_string(), redirect_uri);
-            let state = match data.state {
-                None => err!("No state in data"),
-                Some(state) => state,
-            };
-            cookiemanager.set_cookie("state".to_string(), state);
+    jar.add(cookie);
 
-            let redirect = CustomRedirect {
-                url: format!("{}", auth_url),
-                headers: vec![],
-            };
+    let auth_url = sso::authorize_url(conn, state).await?;
 
-            Ok(redirect)
-        }
-        Err(_err) => err!("Unable to find client from identifier"),
-    }
-}
-
-async fn get_auth_code_access_token(code: &str) -> ApiResult<(String, String, CoreUserInfoClaims)> {
-    let oidc_code = AuthorizationCode::new(String::from(code));
-    match get_client_from_sso_config().await {
-        Ok(client) => match client.exchange_code(oidc_code).request_async(async_http_client).await {
-            Ok(token_response) => {
-                let refresh_token = match token_response.refresh_token() {
-                    Some(token) => token.secret().to_string(),
-                    None => String::new(),
-                };
-                let id_token = match token_response.extra_fields().id_token() {
-                    None => err!("Token response did not contain an id_token"),
-                    Some(token) => token.to_string(),
-                };
-
-                let user_info: CoreUserInfoClaims =
-                    match client.user_info(token_response.access_token().to_owned(), None) {
-                        Err(_err) => err!("Token response did not contain user_info"),
-                        Ok(info) => match info.request_async(async_http_client).await {
-                            Err(_err) => err!("Request to user_info endpoint failed"),
-                            Ok(claim) => claim,
-                        },
-                    };
-
-                Ok((refresh_token, id_token, user_info))
-            }
-            Err(err) => err!("Failed to contact token endpoint: {}", err.to_string()),
-        },
-        Err(_err) => err!("Unable to find client"),
-    }
+    Ok(CustomRedirect {
+        url: auth_url.to_string(),
+        headers: Vec::with_capacity(0),
+    })
 }
