@@ -80,7 +80,9 @@ async fn get_email(data: JsonUpcase<PasswordData>, headers: Headers, mut conn: D
     let data: PasswordData = data.into_inner().data;
     let user = headers.user;
 
-    crate::api::core::two_factor::authenticator_activation_check(&user, &data.MasterPasswordHash)?;
+    if !user.check_valid_password(&data.MasterPasswordHash) {
+        err!("Invalid password");
+    }
 
     let (enabled, mfa_email) =
         match TwoFactor::find_by_user_and_type(&user.uuid, TwoFactorType::Email as i32, &mut conn).await {
@@ -112,7 +114,9 @@ async fn send_email(data: JsonUpcase<SendEmailData>, headers: Headers, mut conn:
     let data: SendEmailData = data.into_inner().data;
     let user = headers.user;
 
-    crate::api::core::two_factor::authenticator_activation_check(&user, &data.MasterPasswordHash)?;
+    if !user.check_valid_password(&data.MasterPasswordHash) {
+        err!("Invalid password");
+    }
 
     if !CONFIG._enable_email_2fa() {
         err!("Email 2FA is disabled")
@@ -150,7 +154,9 @@ async fn email(data: JsonUpcase<EmailData>, headers: Headers, mut conn: DbConn) 
     let data: EmailData = data.into_inner().data;
     let mut user = headers.user;
 
-    crate::api::core::two_factor::authenticator_activation_check(&user, &data.MasterPasswordHash)?;
+    if !user.check_valid_password(&data.MasterPasswordHash) {
+        err!("Invalid password");
+    }
 
     let type_ = TwoFactorType::EmailVerificationChallenge as i32;
     let mut twofactor =

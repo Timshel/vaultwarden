@@ -108,7 +108,9 @@ async fn get_webauthn(data: JsonUpcase<PasswordData>, headers: Headers, mut conn
         err!("`DOMAIN` environment variable is not set. Webauthn disabled")
     }
 
-    crate::api::core::two_factor::authenticator_activation_check(&headers.user, &data.data.MasterPasswordHash)?;
+    if !headers.user.check_valid_password(&data.data.MasterPasswordHash) {
+        err!("Invalid password");
+    }
 
     let (enabled, registrations) = get_webauthn_registrations(&headers.user.uuid, &mut conn).await?;
     let registrations_json: Vec<Value> = registrations.iter().map(WebauthnRegistration::to_json).collect();
@@ -122,7 +124,9 @@ async fn get_webauthn(data: JsonUpcase<PasswordData>, headers: Headers, mut conn
 
 #[post("/two-factor/get-webauthn-challenge", data = "<data>")]
 async fn generate_webauthn_challenge(data: JsonUpcase<PasswordData>, headers: Headers, mut conn: DbConn) -> JsonResult {
-    crate::api::core::two_factor::authenticator_activation_check(&headers.user, &data.data.MasterPasswordHash)?;
+    if !headers.user.check_valid_password(&data.data.MasterPasswordHash) {
+        err!("Invalid password");
+    }
 
     let registrations = get_webauthn_registrations(&headers.user.uuid, &mut conn)
         .await?

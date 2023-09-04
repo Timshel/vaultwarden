@@ -95,7 +95,9 @@ const DISABLED_MESSAGE_DEFAULT: &str = "<To use the global Duo keys, please leav
 async fn get_duo(data: JsonUpcase<PasswordData>, headers: Headers, mut conn: DbConn) -> JsonResult {
     let data: PasswordData = data.into_inner().data;
 
-    crate::api::core::two_factor::authenticator_activation_check(&headers.user, &data.MasterPasswordHash)?;
+    if !headers.user.check_valid_password(&data.MasterPasswordHash) {
+        err!("Invalid password");
+    }
 
     let data = get_user_duo_data(&headers.user.uuid, &mut conn).await;
 
@@ -157,7 +159,9 @@ async fn activate_duo(data: JsonUpcase<EnableDuoData>, headers: Headers, mut con
     let data: EnableDuoData = data.into_inner().data;
     let mut user = headers.user;
 
-    crate::api::core::two_factor::authenticator_activation_check(&user, &data.MasterPasswordHash)?;
+    if !user.check_valid_password(&data.MasterPasswordHash) {
+        err!("Invalid password");
+    }
 
     let (data, data_str) = if check_duo_fields_custom(&data) {
         let data_req: DuoData = data.into();

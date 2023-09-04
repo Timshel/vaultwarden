@@ -1,11 +1,23 @@
+use std::time::Duration;
 use url::Url;
 
 use jsonwebtoken::DecodingKey;
+use mini_moka::sync::Cache;
+use once_cell::sync::Lazy;
 use openidconnect::core::{CoreClient, CoreProviderMetadata, CoreResponseType, CoreUserInfoClaims};
 use openidconnect::reqwest::async_http_client;
-use openidconnect::{AuthenticationFlow, AuthorizationCode, ClientId, ClientSecret, CsrfToken, Nonce, OAuth2TokenResponse, Scope};
+use openidconnect::{
+    AuthenticationFlow, AuthorizationCode, ClientId, ClientSecret, CsrfToken, Nonce, OAuth2TokenResponse, Scope,
+};
 
-use crate::{api::ApiResult, CONFIG};
+use crate::{
+    api::ApiResult,
+    db::{models::SsoNonce, DbConn},
+    CONFIG,
+};
+
+static AC_CACHE: Lazy<Cache<String, AuthenticatedUser>> =
+    Lazy::new(|| Cache::builder().max_capacity(1000).time_to_live(Duration::from_secs(10 * 60)).build());
 
 async fn get_client() -> ApiResult<CoreClient> {
     let client_id = ClientId::new(CONFIG.sso_client_id());
@@ -22,7 +34,8 @@ async fn get_client() -> ApiResult<CoreClient> {
         .set_redirect_uri(CONFIG.sso_redirect_url()?))
 }
 
-pub async fn authorize_url() -> ApiResult<(Url, Nonce)> {
+// The `nonce` allow to protect against replay attacks
+pub async fn authorize_url(mut conn: DbConn) -> ApiResult<Url> {
     let client = get_client().await?;
 
     let (auth_url, _csrf_state, nonce) = client
@@ -35,7 +48,10 @@ pub async fn authorize_url() -> ApiResult<(Url, Nonce)> {
         .add_scope(Scope::new("profile".to_string()))
         .url();
 
-    Ok( (auth_url, nonce) )
+    let sso_nonce = SsoNonce::new(nonce.secret().to_string());
+    sso_nonce.save(&mut conn).await?;
+
+    Ok(auth_url)
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -45,15 +61,24 @@ struct TokenPayload {
     nonce: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct AuthenticatedUser {
+#[derive(Clone, Debug)]
+struct AuthenticatedUser {
     pub nonce: String,
     pub refresh_token: String,
     pub email: String,
 }
 
-pub async fn exchange_code(code: &str) -> ApiResult<AuthenticatedUser> {
-    let oidc_code = AuthorizationCode::new(String::from(code));
+// During the 2FA flow we will
+//  - retrieve the user information and then only discover he needs 2FA.
+//  - second time we will rely on the `AC_CACHE` since the `code` has already been exchanged.
+// The `nonce` will ensure that the user is authorized only once.
+// We return only the `email` to force calling `redeem` to obtain the `refresh_token`.
+pub async fn exchange_code(code: &String) -> ApiResult<String> {
+    if let Some(authenticated_user) = AC_CACHE.get(code) {
+        return Ok(authenticated_user.email);
+    }
+
+    let oidc_code = AuthorizationCode::new(code.clone());
     let client = get_client().await?;
 
     match client.exchange_code(oidc_code).request_async(async_http_client).await {
@@ -73,12 +98,16 @@ pub async fn exchange_code(code: &str) -> ApiResult<AuthenticatedUser> {
 
             let user_info: CoreUserInfoClaims = match endpoint.request_async(async_http_client).await {
                 Err(err) => err!(format!("Request to user_info endpoint failed: {err}")),
-                Ok(user_info) => user_info
+                Ok(user_info) => user_info,
             };
 
             let mut validation = jsonwebtoken::Validation::default();
             validation.insecure_disable_signature_validation();
-            let token = match jsonwebtoken::decode::<TokenPayload>(id_token.as_str(), &DecodingKey::from_secret(&[]), &validation) {
+            let token = match jsonwebtoken::decode::<TokenPayload>(
+                id_token.as_str(),
+                &DecodingKey::from_secret(&[]),
+                &validation,
+            ) {
                 Err(_err) => err!("Could not decode id token"),
                 Ok(payload) => payload.claims,
             };
@@ -91,8 +120,34 @@ pub async fn exchange_code(code: &str) -> ApiResult<AuthenticatedUser> {
                 },
             };
 
-            Ok(AuthenticatedUser { nonce: token.nonce, refresh_token: refresh_token, email: email })
+            let authenticated_user = AuthenticatedUser {
+                nonce: token.nonce,
+                refresh_token: refresh_token,
+                email: email.clone(),
+            };
+
+            AC_CACHE.insert(code.clone(), authenticated_user.clone());
+
+            Ok(email)
         }
         Err(err) => err!(format!("Failed to contact token endpoint: {err}")),
+    }
+}
+
+// User has passed 2FA flow we can delete `nonce` and clear the cache.
+pub async fn redeem(code: &String, conn: &mut DbConn) -> ApiResult<String> {
+    if let Some(au) = AC_CACHE.get(code) {
+        AC_CACHE.invalidate(code);
+
+        if let Some(sso_nonce) = SsoNonce::find(&au.nonce, conn).await {
+            match sso_nonce.delete(conn).await {
+                Err(msg) => err!(format!("Failed to delete nonce: {msg}")),
+                Ok(_) => Ok(au.refresh_token),
+            }
+        } else {
+            err!("Failed to retrive nonce from db")
+        }
+    } else {
+        err!("Failed to retrieve user info from sso cache")
     }
 }

@@ -147,6 +147,7 @@ struct TokenPayload {
     nonce: String,
 }
 
+// After exchanging the code we need to check first if 2FA is needed before continuing
 async fn _authorization_login(
     data: ConnectData,
     user_uuid: &mut Option<String>,
@@ -167,33 +168,38 @@ async fn _authorization_login(
         Some(code) => code,
     };
 
-    let infos = sso::exchange_code(code).await?;
+    let email = sso::exchange_code(code).await?;
 
-    if let Some(sso_nonce) = SsoNonce::find(&infos.nonce, conn).await {
-        match sso_nonce.delete(conn).await {
-            Err(msg) => err!(format!("Failed to delete nonce: {msg}")),
-            Ok(_) => {
-                let now = Utc::now().naive_utc();
+    let user_data = match User::find_by_mail(email.as_str(), conn).await {
+        None => None,
+        Some(user) => {
+            let (mut device, new_device) = get_device(&data, conn, &user).await;
+            let twofactor_token = twofactor_auth(&user.uuid, &data, &mut device, ip, conn).await?;
 
-                let user = match User::find_by_mail(&infos.email, conn).await {
-                    Some(user) => user,
-                    None => {
-                        let mut user = User::new(infos.email.clone());
-                        user.verified_at = Some(now);
-                        user.save(conn).await?;
-                        user
-                    }
-                };
-
-                // Set the user_uuid here to be passed back used for event logging.
-                *user_uuid = Some(user.uuid.clone());
-
-                common_auth(true, &data, scope, scope_vec, &user, Some(infos.refresh_token), &now, conn, ip).await
-            }
+            Some((user, device, new_device, twofactor_token))
         }
-    } else {
-        err!("Invalid nonce")
-    }
+    };
+
+    let refresh_token = sso::redeem(code, conn).await?;
+
+    let now = Utc::now().naive_utc();
+    let (user, mut device, new_device, twofactor_token) = match user_data {
+        Some(data) => data,
+        None => {
+            let mut user = User::new(email.clone());
+            user.verified_at = Some(now);
+            user.save(conn).await?;
+
+            let (device, new_device) = get_device(&data, conn, &user).await;
+
+            (user, device, new_device, None)
+        }
+    };
+
+    device.refresh_token = refresh_token; // will be saved in authenticated_response
+    *user_uuid = Some(user.uuid.clone()); // Set the user_uuid to be passed back used for event logging.
+
+    authenticated_response(scope, scope_vec, &user, &mut device, new_device, twofactor_token, &now, conn, ip).await
 }
 
 async fn _password_login(
@@ -313,24 +319,24 @@ async fn _password_login(
         )
     }
 
-    common_auth(false, &data, scope, scope_vec, &user, None, &now, conn, ip).await
+    let (mut device, new_device) = get_device(&data, conn, &user).await;
+
+    let twofactor_token = twofactor_auth(&user.uuid, &data, &mut device, ip, conn).await?;
+
+    authenticated_response(scope, scope_vec, &user, &mut device, new_device, twofactor_token, &now, conn, ip).await
 }
 
-async fn common_auth(
-    sso_login: bool,
-    data: &ConnectData,
+async fn authenticated_response(
     scope: &String,
     scope_vec: Vec<String>,
     user: &User,
-    refresh_token: Option<String>,
+    device: &mut Device,
+    new_device: bool,
+    twofactor_token: Option<String>,
     now: &NaiveDateTime,
     conn: &mut DbConn,
     ip: &ClientIp,
 ) -> JsonResult {
-    let (mut device, new_device) = get_device(&data, conn, &user).await;
-
-    let twofactor_token = twofactor_auth(&user.uuid, &data, &mut device, ip, sso_login, conn).await?;
-
     if CONFIG.mail_enabled() && new_device {
         if let Err(e) = mail::send_new_device_logged_in(&user.email, &ip.ip.to_string(), now, &device.name).await {
             error!("Error sending new device email: {:#?}", e);
@@ -344,10 +350,6 @@ async fn common_auth(
                 )
             }
         }
-    }
-
-    if let Some(rt) = refresh_token {
-        device.refresh_token = rt;
     }
 
     if CONFIG.sso_acceptall_invites() {
@@ -552,7 +554,6 @@ async fn twofactor_auth(
     data: &ConnectData,
     device: &mut Device,
     ip: &ClientIp,
-    is_sso: bool,
     conn: &mut DbConn,
 ) -> ApiResult<Option<String>> {
     let twofactors = TwoFactor::find_by_user(user_uuid, conn).await;
@@ -569,17 +570,7 @@ async fn twofactor_auth(
 
     let twofactor_code = match data.two_factor_token {
         Some(ref code) => code,
-        None => {
-            if is_sso {
-                if CONFIG.sso_only() {
-                    err!("2FA not supported with SSO login, contact your administrator");
-                } else {
-                    err!("2FA not supported with SSO login, log in directly using email and master password");
-                }
-            } else {
-                err_json!(_json_err_twofactor(&twofactor_ids, user_uuid, conn).await?, "2FA token not provided");
-            }
-        }
+        None => err_json!(_json_err_twofactor(&twofactor_ids, user_uuid, conn).await?, "2FA token not provided"),
     };
 
     let selected_twofactor = twofactors.into_iter().find(|tf| tf.atype == selected_id && tf.enabled);
@@ -858,15 +849,10 @@ struct AuthorizeData {
     ssoToken: Option<String>,
 }
 
-
-
 #[get("/connect/authorize?<data..>")]
-async fn authorize(data: AuthorizeData, jar: &CookieJar<'_>, mut conn: DbConn) -> ApiResult<CustomRedirect> {
+async fn authorize(data: AuthorizeData, jar: &CookieJar<'_>, conn: DbConn) -> ApiResult<CustomRedirect> {
     let cookiemanager = CookieManager::new(jar);
-    let (auth_url, nonce) = sso::authorize_url().await?;
-
-    let sso_nonce = SsoNonce::new(nonce.secret().to_string());
-    sso_nonce.save(&mut conn).await?;
+    let auth_url = sso::authorize_url(conn).await?;
 
     let redirect_uri = match data.redirect_uri {
         None => err!("No redirect_uri in data"),
