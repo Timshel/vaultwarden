@@ -80,6 +80,7 @@ mod crypto;
 mod db;
 mod mail;
 mod ratelimit;
+mod sso;
 mod util;
 
 use crate::api::purge_auth_requests;

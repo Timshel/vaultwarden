@@ -1,5 +1,4 @@
 use chrono::{NaiveDateTime, Utc};
-use jsonwebtoken::DecodingKey;
 use num_traits::FromPrimitive;
 use rocket::serde::json::Json;
 use rocket::{
@@ -19,7 +18,7 @@ use crate::{
     auth::{encode_jwt, generate_organization_api_key_login_claims, generate_ssotoken_claims, ClientHeaders, ClientIp},
     db::{models::*, DbConn},
     error::MapResult,
-    mail, util,
+    mail, sso, util,
     util::{CookieManager, CustomRedirect},
     CONFIG,
 };
@@ -168,35 +167,18 @@ async fn _authorization_login(
         Some(code) => code,
     };
 
-    let (refresh_token, id_token, user_info) = get_auth_code_access_token(code).await?;
+    let infos = sso::exchange_code(code).await?;
 
-    let mut validation = jsonwebtoken::Validation::default();
-    validation.insecure_disable_signature_validation();
-
-    let token =
-        match jsonwebtoken::decode::<TokenPayload>(id_token.as_str(), &DecodingKey::from_secret(&[]), &validation) {
-            Err(_err) => err!("Could not decode id token"),
-            Ok(payload) => payload.claims,
-        };
-
-    if let Some(sso_nonce) = SsoNonce::find(&token.nonce, conn).await {
+    if let Some(sso_nonce) = SsoNonce::find(&infos.nonce, conn).await {
         match sso_nonce.delete(conn).await {
             Err(msg) => err!(format!("Failed to delete nonce: {msg}")),
             Ok(_) => {
                 let now = Utc::now().naive_utc();
 
-                let user_email = match token.email {
-                    Some(email) => email,
-                    None => match user_info.email() {
-                        None => err!("Neither id token nor userinfo contained an email"),
-                        Some(email) => email.to_owned().to_string(),
-                    },
-                };
-
-                let user = match User::find_by_mail(&user_email, conn).await {
+                let user = match User::find_by_mail(&infos.email, conn).await {
                     Some(user) => user,
                     None => {
-                        let mut user = User::new(user_email.clone());
+                        let mut user = User::new(infos.email.clone());
                         user.verified_at = Some(now);
                         user.save(conn).await?;
                         user
@@ -206,7 +188,7 @@ async fn _authorization_login(
                 // Set the user_uuid here to be passed back used for event logging.
                 *user_uuid = Some(user.uuid.clone());
 
-                common_auth(true, &data, scope, scope_vec, &user, Some(refresh_token), &now, conn, ip).await
+                common_auth(true, &data, scope, scope_vec, &user, Some(infos.refresh_token), &now, conn, ip).await
             }
         }
     } else {
@@ -817,27 +799,6 @@ fn prevalidate() -> JsonResult {
     })))
 }
 
-use openidconnect::core::{CoreClient, CoreProviderMetadata, CoreResponseType, CoreUserInfoClaims};
-use openidconnect::reqwest::async_http_client;
-use openidconnect::{
-    AuthenticationFlow, AuthorizationCode, ClientId, ClientSecret, CsrfToken, Nonce, OAuth2TokenResponse, Scope,
-};
-
-async fn get_client_from_sso_config() -> ApiResult<CoreClient> {
-    let client_id = ClientId::new(CONFIG.sso_client_id());
-    let client_secret = ClientSecret::new(CONFIG.sso_client_secret());
-
-    let issuer_url = CONFIG.sso_issuer_url()?;
-
-    let provider_metadata = match CoreProviderMetadata::discover_async(issuer_url, async_http_client).await {
-        Err(err) => err!(format!("Failed to discover OpenID provider: {err}")),
-        Ok(metadata) => metadata,
-    };
-
-    Ok(CoreClient::from_provider_metadata(provider_metadata, client_id, Some(client_secret))
-        .set_redirect_uri(CONFIG.sso_redirect_url()?))
-}
-
 #[get("/connect/oidc-signin?<code>")]
 fn oidcsignin(code: String, jar: &CookieJar<'_>, _conn: DbConn) -> ApiResult<CustomRedirect> {
     let cookiemanager = CookieManager::new(jar);
@@ -897,20 +858,12 @@ struct AuthorizeData {
     ssoToken: Option<String>,
 }
 
+
+
 #[get("/connect/authorize?<data..>")]
 async fn authorize(data: AuthorizeData, jar: &CookieJar<'_>, mut conn: DbConn) -> ApiResult<CustomRedirect> {
     let cookiemanager = CookieManager::new(jar);
-    let client = get_client_from_sso_config().await?;
-
-    let (auth_url, _csrf_state, nonce) = client
-        .authorize_url(
-            AuthenticationFlow::<CoreResponseType>::AuthorizationCode,
-            CsrfToken::new_random,
-            Nonce::new_random,
-        )
-        .add_scope(Scope::new("email".to_string()))
-        .add_scope(Scope::new("profile".to_string()))
-        .url();
+    let (auth_url, nonce) = sso::authorize_url().await?;
 
     let sso_nonce = SsoNonce::new(nonce.secret().to_string());
     sso_nonce.save(&mut conn).await?;
@@ -931,32 +884,4 @@ async fn authorize(data: AuthorizeData, jar: &CookieJar<'_>, mut conn: DbConn) -
         url: format!("{}", auth_url),
         headers: vec![],
     })
-}
-
-async fn get_auth_code_access_token(code: &str) -> ApiResult<(String, String, CoreUserInfoClaims)> {
-    let oidc_code = AuthorizationCode::new(String::from(code));
-    let client = get_client_from_sso_config().await?;
-
-    match client.exchange_code(oidc_code).request_async(async_http_client).await {
-        Ok(token_response) => {
-            let refresh_token =
-                token_response.refresh_token().map_or(String::new(), |token| token.secret().to_string());
-
-            let id_token = match token_response.extra_fields().id_token() {
-                None => err!("Token response did not contain an id_token"),
-                Some(token) => token.to_string(),
-            };
-
-            let endpoint = match client.user_info(token_response.access_token().to_owned(), None) {
-                Err(err) => err!(format!("No user_info endpoint: {err}")),
-                Ok(endpoint) => endpoint,
-            };
-
-            match endpoint.request_async(async_http_client).await {
-                Err(err) => err!(format!("Request to user_info endpoint failed: {err}")),
-                Ok(userinfo) => Ok((refresh_token, id_token, userinfo)),
-            }
-        }
-        Err(err) => err!(format!("Failed to contact token endpoint: {err}")),
-    }
 }
