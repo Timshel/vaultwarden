@@ -26,12 +26,6 @@ Then you can access :
  - `VaultWarden` on http://127.0.0.1:8000 with the default user `test@yopmail.com/test`.
  - `Keycloak` on http://127.0.0.1:8080/admin/master/console/ with the default user `admin/admin`
 
- To procede with an SSO login after you enter the email, on the screen prompting for `Master Password` you'll need to reveal the SSO login button using in the debug console (F12)
-
- ```js
- document.querySelector('a[routerlink="/sso"]').style.setProperty("display", "inline-block", "important");
- ```
-
 ## Runnin only Keycloak
 
 Since the `VaultWarden` service is defined with a `profile` you can just use the default `docker-compose` command :
