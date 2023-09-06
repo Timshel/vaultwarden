@@ -5,8 +5,8 @@ use serde_json::Value;
 
 use crate::{
     api::{
-        core::log_user_event, register_push_device, unregister_push_device, AnonymousNotify, EmptyResult, JsonResult,
-        JsonUpcase, Notify, NumberOrString, PasswordData, UpdateType,
+        core::log_user_event, register_push_device, unregister_push_device, AnonymousNotify, ApiResult, EmptyResult,
+        JsonResult, JsonUpcase, Notify, NumberOrString, PasswordData, UpdateType,
     },
     auth::{decode_delete, decode_invite, decode_verify_email, ClientHeaders, Headers},
     crypto,
@@ -894,14 +894,33 @@ struct SecretVerificationRequest {
     MasterPasswordHash: String,
 }
 
+// Change the KDF Iterations if necessary
+pub async fn kdf_upgrade(user: &mut User, pwd_hash: &String, conn: &mut DbConn) -> ApiResult<()> {
+    if user.password_iterations != CONFIG.password_iterations() {
+        user.password_iterations = CONFIG.password_iterations();
+        user.set_password(pwd_hash, None, false, None);
+
+        if let Err(e) = user.save(conn).await {
+            error!("Error updating user: {:#?}", e);
+        }
+    }
+    Ok(())
+}
+
 #[post("/accounts/verify-password", data = "<data>")]
-fn verify_password(data: JsonUpcase<SecretVerificationRequest>, headers: Headers) -> JsonResult {
+async fn verify_password(
+    data: JsonUpcase<SecretVerificationRequest>,
+    headers: Headers,
+    mut conn: DbConn,
+) -> JsonResult {
     let data: SecretVerificationRequest = data.into_inner().data;
-    let user = headers.user;
+    let mut user = headers.user;
 
     if !user.check_valid_password(&data.MasterPasswordHash) {
         err!("Invalid password")
     }
+
+    kdf_upgrade(&mut user, &data.MasterPasswordHash, &mut conn).await?;
 
     Ok(Json(json!({
       "MasterPasswordPolicy": {}, // Required for SSO login with mobile apps

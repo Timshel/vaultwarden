@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use crate::{
     api::{
-        core::accounts::{PreloginData, RegisterData, _prelogin, _register},
+        core::accounts::{PreloginData, RegisterData, _prelogin, _register, kdf_upgrade},
         core::log_user_event,
         core::two_factor::{duo, email, email::EmailTokenData, yubikey},
         ApiResult, EmptyResult, JsonResult, JsonUpcase,
@@ -264,15 +264,7 @@ async fn _password_login(
         )
     }
 
-    // Change the KDF Iterations
-    if user.password_iterations != CONFIG.password_iterations() {
-        user.password_iterations = CONFIG.password_iterations();
-        user.set_password(password, None, false, None);
-
-        if let Err(e) = user.save(conn).await {
-            error!("Error updating user: {:#?}", e);
-        }
-    }
+    kdf_upgrade(&mut user, password, conn).await?;
 
     // Check if the user is disabled
     if !user.enabled {
