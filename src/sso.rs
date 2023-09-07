@@ -1,3 +1,4 @@
+use std::sync::RwLock;
 use std::time::Duration;
 use url::Url;
 
@@ -19,6 +20,9 @@ use crate::{
 static AC_CACHE: Lazy<Cache<String, AuthenticatedUser>> =
     Lazy::new(|| Cache::builder().max_capacity(1000).time_to_live(Duration::from_secs(10 * 60)).build());
 
+static CLIENT_CACHE: RwLock<Option<CoreClient>> = RwLock::new(None);
+
+// Call the OpenId discovery endpoint to retrieve configuration
 async fn get_client() -> ApiResult<CoreClient> {
     let client_id = ClientId::new(CONFIG.sso_client_id());
     let client_secret = ClientSecret::new(CONFIG.sso_client_secret());
@@ -34,11 +38,23 @@ async fn get_client() -> ApiResult<CoreClient> {
         .set_redirect_uri(CONFIG.sso_redirect_url()?))
 }
 
+// Simple cache to prevent recalling the discovery endpoint each time
+async fn cached_client() -> ApiResult<CoreClient> {
+    let cc_client = CLIENT_CACHE.read().ok().map(|rw_lock| rw_lock.clone()).flatten();
+    match cc_client {
+        Some(client) => Ok(client),
+        None => get_client().await.map(|client| {
+            let mut cached_client = CLIENT_CACHE.write().unwrap();
+            *cached_client = Some(client.clone());
+            client
+        }),
+    }
+}
+
 // The `nonce` allow to protect against replay attacks
 pub async fn authorize_url(mut conn: DbConn) -> ApiResult<Url> {
-    let client = get_client().await?;
-
-    let (auth_url, _csrf_state, nonce) = client
+    let (auth_url, _csrf_state, nonce) = cached_client()
+        .await?
         .authorize_url(
             AuthenticationFlow::<CoreResponseType>::AuthorizationCode,
             CsrfToken::new_random,
@@ -79,7 +95,7 @@ pub async fn exchange_code(code: &String) -> ApiResult<String> {
     }
 
     let oidc_code = AuthorizationCode::new(code.clone());
-    let client = get_client().await?;
+    let client = cached_client().await?;
 
     match client.exchange_code(oidc_code).request_async(async_http_client).await {
         Ok(token_response) => {
