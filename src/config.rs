@@ -618,6 +618,8 @@ make_config! {
         sso_callback_path:      String, false,  gen,    |c| generate_sso_callback_path(&c.domain);
         /// Allow workaround so SSO logins accept all invites
         sso_acceptall_invites:  bool,   true,   def,     false;
+        /// Optional sso public key
+        sso_key_filepath:       String, false,  auto,   |c| format!("{}/{}", c.data_folder, "sso_key.pub.pem");
     },
 
     /// Yubikey settings

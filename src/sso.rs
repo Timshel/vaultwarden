@@ -2,7 +2,7 @@ use std::sync::RwLock;
 use std::time::Duration;
 use url::Url;
 
-use jsonwebtoken::DecodingKey;
+use jsonwebtoken::{DecodingKey, Validation};
 use mini_moka::sync::Cache;
 use once_cell::sync::Lazy;
 use openidconnect::core::{CoreClient, CoreProviderMetadata, CoreResponseType, CoreUserInfoClaims};
@@ -21,6 +21,13 @@ static AC_CACHE: Lazy<Cache<String, AuthenticatedUser>> =
     Lazy::new(|| Cache::builder().max_capacity(1000).time_to_live(Duration::from_secs(10 * 60)).build());
 
 static CLIENT_CACHE: RwLock<Option<CoreClient>> = RwLock::new(None);
+
+static SSO_JWT_VALIDATION: Lazy<(DecodingKey, Validation)> = Lazy::new(|| prepare_decoding());
+
+// Will Panic if SSO is activated and a key file is present but we can't decode its content
+pub fn load_lazy() {
+    Lazy::force(&SSO_JWT_VALIDATION);
+}
 
 // Call the OpenId discovery endpoint to retrieve configuration
 async fn get_client() -> ApiResult<CoreClient> {
@@ -84,6 +91,48 @@ struct AuthenticatedUser {
     pub email: String,
 }
 
+// DecodingKey and Validation used to read the SSO JWT token response
+// If there is no key fallback to reading without validation
+fn prepare_decoding() -> (DecodingKey, Validation) {
+    let maybe_key = CONFIG
+        .sso_enabled()
+        .then_some(())
+        .map(|_| match std::fs::read(CONFIG.sso_key_filepath()) {
+            Ok(key) => Some(DecodingKey::from_rsa_pem(&key).unwrap_or_else(|e| {
+                panic!(
+                    "Failed to decode optional SSO public RSA Key, format should exactly match:\n\
+                    -----BEGIN PUBLIC KEY-----\n\
+                    ...\n\
+                    -----END PUBLIC KEY-----\n\
+                    Error: {e}"
+                );
+            })),
+            Err(err) => {
+                println!("[INFO] Can't read optional SSO public key at {} : {err}", CONFIG.sso_key_filepath());
+                None
+            }
+        })
+        .flatten();
+
+    match maybe_key {
+        Some(key) => {
+            let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::RS256);
+            validation.leeway = 30; // 30 seconds
+            validation.validate_exp = true;
+            validation.validate_nbf = true;
+            validation.set_issuer(&[CONFIG.sso_authority()]);
+
+            (key, validation)
+        }
+        None => {
+            let mut validation = jsonwebtoken::Validation::default();
+            validation.insecure_disable_signature_validation();
+
+            (DecodingKey::from_secret(&[]), validation)
+        }
+    }
+}
+
 // During the 2FA flow we will
 //  - retrieve the user information and then only discover he needs 2FA.
 //  - second time we will rely on the `AC_CACHE` since the `code` has already been exchanged.
@@ -117,14 +166,9 @@ pub async fn exchange_code(code: &String) -> ApiResult<String> {
                 Ok(user_info) => user_info,
             };
 
-            let mut validation = jsonwebtoken::Validation::default();
-            validation.insecure_disable_signature_validation();
-            let token = match jsonwebtoken::decode::<TokenPayload>(
-                id_token.as_str(),
-                &DecodingKey::from_secret(&[]),
-                &validation,
-            ) {
-                Err(_err) => err!("Could not decode id token"),
+            let kv_coercion: &(DecodingKey, Validation) = &SSO_JWT_VALIDATION;
+            let token = match jsonwebtoken::decode::<TokenPayload>(id_token.as_str(), &kv_coercion.0, &kv_coercion.1) {
+                Err(err) => err!(format!("Could not decode id token: {err}")),
                 Ok(payload) => payload.claims,
             };
 

@@ -108,6 +108,7 @@ async fn main() -> Result<(), Error> {
         exit(1);
     });
     check_web_vault();
+    crate::sso::load_lazy();
 
     create_dir(&CONFIG.icon_cache_folder(), "icon cache");
     create_dir(&CONFIG.tmp_folder(), "tmp folder");
