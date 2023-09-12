@@ -4,7 +4,7 @@
 FROM docker.io/library/rust:1.72.0-bookworm as build
 
 # Get the front-end
-RUN wget -c https://github.com/Timshel/oidc_web_builds/releases/download/v2023.8.2/oidc_button_web_vault-v2023.8.2-1.tar.gz -O - | tar -xz
+RUN wget -c https://github.com/Timshel/oidc_web_builds/releases/download/v2023.8.2-1/oidc_button_web_vault-v2023.8.2-1.tar.gz -O - | tar -xz
 
 # Build time options to avoid dpkg warnings and help with reproducible builds.
 ENV DEBIAN_FRONTEND=noninteractive \
