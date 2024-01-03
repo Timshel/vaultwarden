@@ -9,7 +9,6 @@ export async function create(test, page: Page, name: string) {
         await page.getByRole('link', { name: 'New organisation' }).click();
         await page.getByLabel('Organisation name (required)').fill(name);
         await page.getByRole('button', { name: 'Submit' }).click();
-
         await utils.checkNotification(page, 'Organisation created');
     });
 }

@@ -59,7 +59,7 @@ db_object! {
 }
 
 // https://github.com/bitwarden/server/blob/b86a04cef9f1e1b82cf18e49fc94e017c641130c/src/Core/Enums/OrganizationUserStatusType.cs
-#[derive(PartialEq)]
+#[derive(Copy, Clone, PartialEq)]
 pub enum MembershipStatus {
     Revoked = -1,
     Invited = 0,
@@ -255,8 +255,12 @@ impl Membership {
         }
     }
 
+    pub fn is_revoked(&self) -> bool {
+        self.status < MembershipStatus::Invited as i32
+    }
+
     pub fn restore(&mut self) -> bool {
-        if self.status < MembershipStatus::Invited as i32 {
+        if self.is_revoked() {
             self.status += ACTIVATE_REVOKE_DIFF;
             return true;
         }
@@ -264,7 +268,7 @@ impl Membership {
     }
 
     pub fn revoke(&mut self) -> bool {
-        if self.status > MembershipStatus::Revoked as i32 {
+        if !self.is_revoked() {
             self.status -= ACTIVATE_REVOKE_DIFF;
             return true;
         }
@@ -273,7 +277,7 @@ impl Membership {
 
     /// Return the status of the user in an unrevoked state
     pub fn get_unrevoked_status(&self) -> i32 {
-        if self.status <= MembershipStatus::Revoked as i32 {
+        if self.is_revoked() {
             return self.status + ACTIVATE_REVOKE_DIFF;
         }
         self.status
@@ -390,6 +394,21 @@ impl Organization {
                 .filter(organizations::uuid.eq(uuid))
                 .first::<OrganizationDb>(conn)
                 .ok().from_db()
+        }}
+    }
+
+    pub async fn find_by_uuids_or_names(
+        uuids: &Vec<OrganizationId>,
+        names: &Vec<String>,
+        conn: &mut DbConn,
+    ) -> Vec<Self> {
+        db_run! { conn: {
+            organizations::table
+                .filter(
+                    organizations::uuid.eq_any(uuids).or(organizations::name.eq_any(names))
+                )
+                .load::<OrganizationDb>(conn)
+                .expect("Error loading organizations").from_db()
         }}
     }
 
