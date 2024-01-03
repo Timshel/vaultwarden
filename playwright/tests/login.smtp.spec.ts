@@ -44,10 +44,7 @@ test('Login', async ({ context, page }) => {
     await logUser(test, page, users.user1, mailBuffer);
 
     await test.step('verify email', async () => {
-        await page.getByText('Verify your account\'s email').click();
-        await expect(page.getByText('Verify your account\'s email')).toBeVisible();
-        await page.getByRole('button', { name: 'Send email' }).click();
-
+        await page.getByRole('button', { name: "Send email" }).click();
         await utils.checkNotification(page, 'Check your email inbox for a verification link');
 
         const verify = await mailBuffer.next((m) => m.subject === "Verify Your Email");
