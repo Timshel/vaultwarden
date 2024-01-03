@@ -1,6 +1,8 @@
 use chrono::Utc;
 use derive_more::{AsRef, Deref, Display, From};
 use regex::Regex;
+use serde::de::DeserializeOwned;
+use serde_with::{serde_as, DefaultOnError};
 use std::borrow::Cow;
 use std::time::Duration;
 use url::Url;
@@ -22,7 +24,7 @@ use crate::{
     auth,
     auth::{AuthMethod, AuthTokens, TokenWrapper, BW_EXPIRATION, DEFAULT_REFRESH_VALIDITY},
     db::{
-        models::{Device, SsoNonce, User},
+        models::{Device, EventType, SsoNonce, User},
         DbConn,
     },
     CONFIG,
@@ -168,15 +170,18 @@ impl BasicTokenClaims {
     }
 }
 
-fn decode_token_claims(token_name: &str, token: &str) -> ApiResult<BasicTokenClaims> {
+// IdToken validation is handled by IdToken.claims
+// This is only used to retrive additionnal claims which are configurable
+// Or to try to parse access_token and refresh_tken as JWT to find exp
+fn insecure_decode<T: DeserializeOwned>(token_name: &str, token: &str) -> ApiResult<T> {
     let mut validation = jsonwebtoken::Validation::default();
     validation.set_issuer(&[CONFIG.sso_authority()]);
     validation.insecure_disable_signature_validation();
     validation.validate_aud = false;
 
-    match jsonwebtoken::decode(token, &jsonwebtoken::DecodingKey::from_secret(&[]), &validation) {
+    match jsonwebtoken::decode::<T>(token, &jsonwebtoken::DecodingKey::from_secret(&[]), &validation) {
         Ok(btc) => Ok(btc.claims),
-        Err(err) => err_silent!(format!("Failed to decode basic token claims from {token_name}: {err}")),
+        Err(err) => err_silent!(format!("Failed to decode {token_name}: {err}")),
     }
 }
 
@@ -355,6 +360,22 @@ impl OIDCIdentifier {
     }
 }
 
+#[derive(Debug)]
+struct AdditionnalClaims {
+    role: Option<UserRole>,
+}
+
+#[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UserRole {
+    Admin,
+    User,
+}
+
+#[serde_as]
+#[derive(Deserialize)]
+struct UserRoles(#[serde_as(as = "Vec<DefaultOnError>")] Vec<Option<UserRole>>);
+
 #[derive(Clone, Debug)]
 pub struct AuthenticatedUser {
     pub refresh_token: Option<String>,
@@ -364,6 +385,13 @@ pub struct AuthenticatedUser {
     pub email: String,
     pub email_verified: Option<bool>,
     pub user_name: Option<String>,
+    pub role: Option<UserRole>,
+}
+
+impl AuthenticatedUser {
+    pub fn is_admin(&self) -> bool {
+        self.role.as_ref().is_some_and(|x| x == &UserRole::Admin)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -373,6 +401,53 @@ pub struct UserInformation {
     pub email: String,
     pub email_verified: Option<bool>,
     pub user_name: Option<String>,
+}
+
+// Errors are logged but will return None
+fn roles_claim(email: &str, token: &serde_json::Value) -> Option<UserRole> {
+    if let Some(json_roles) = token.pointer(&CONFIG.sso_roles_token_path()) {
+        match serde_json::from_value::<UserRoles>(json_roles.clone()) {
+            Ok(UserRoles(mut roles)) => {
+                roles.sort();
+                roles.into_iter().find(|r| r.is_some()).flatten()
+            }
+            Err(err) => {
+                debug!("Failed to parse user ({email}) roles: {err}");
+                None
+            }
+        }
+    } else {
+        debug!("No roles in {email} id_token at {}", &CONFIG.sso_roles_token_path());
+        None
+    }
+}
+
+// Trying to conditionnally read additionnal configurable claims using openidconnect appear nightmarish
+// So we just decode the token again as a JsValue
+fn additional_claims(email: &str, token: &str) -> ApiResult<AdditionnalClaims> {
+    let mut role = None;
+
+    if CONFIG.sso_roles_enabled() {
+        match insecure_decode::<serde_json::Value>("id_token", token) {
+            Err(err) => err!(format!("Could not decode access token: {:?}", err)),
+            Ok(claims) => match roles_claim(email, &claims) {
+                None if !CONFIG.sso_roles_default_to_user() => {
+                    info!("User {email} failed to login due to missing/invalid role");
+                    err!(
+                        "Invalid user role. Contact your administrator",
+                        ErrorEvent {
+                            event: EventType::UserFailedLogIn
+                        }
+                    )
+                }
+                r => role = r,
+            },
+        }
+    }
+
+    Ok(AdditionnalClaims {
+        role,
+    })
 }
 
 async fn decode_code_claims(code: &str, conn: &mut DbConn) -> ApiResult<(OIDCCode, OIDCState)> {
@@ -474,8 +549,9 @@ pub async fn exchange_code(wrapped_code: &str, conn: &mut DbConn) -> ApiResult<U
                 },
             }
             .to_lowercase();
+            let user_name = id_claims.preferred_username().map(|un| un.to_string());
 
-            let user_name = user_info.preferred_username().map(|un| un.to_string());
+            let additional_claims = additional_claims(&email, &id_token.to_string())?;
 
             let refresh_token = token_response.refresh_token().map(|t| t.secret());
             if refresh_token.is_none() && CONFIG.sso_scopes_vec().contains(&"offline_access".to_string()) {
@@ -492,9 +568,10 @@ pub async fn exchange_code(wrapped_code: &str, conn: &mut DbConn) -> ApiResult<U
                 email: email.clone(),
                 email_verified: id_claims.email_verified(),
                 user_name: user_name.clone(),
+                role: additional_claims.role,
             };
 
-            AC_CACHE.insert(state.clone(), authenticated_user.clone());
+            AC_CACHE.insert(state.clone(), authenticated_user);
 
             Ok(UserInformation {
                 state,
@@ -535,7 +612,7 @@ pub fn create_auth_tokens(
     if !CONFIG.sso_auth_only_not_session() {
         let now = Utc::now();
 
-        let (ap_nbf, ap_exp) = match (decode_token_claims("access_token", &access_token), expires_in) {
+        let (ap_nbf, ap_exp) = match (insecure_decode::<BasicTokenClaims>("access_token", &access_token), expires_in) {
             (Ok(ap), _) => (ap.nbf(), ap.exp),
             (Err(_), Some(exp)) => (now.timestamp(), (now + exp).timestamp()),
             _ => err!("Non jwt access_token and empty expires_in"),
@@ -557,7 +634,7 @@ fn _create_auth_tokens(
     access_token: String,
 ) -> ApiResult<AuthTokens> {
     let (nbf, exp, token) = if let Some(rt) = refresh_token {
-        match decode_token_claims("refresh_token", &rt) {
+        match insecure_decode::<BasicTokenClaims>("refresh_token", &rt) {
             Err(_) => {
                 let time_now = Utc::now();
                 let exp = (time_now + *DEFAULT_REFRESH_VALIDITY).timestamp();

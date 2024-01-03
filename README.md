@@ -21,12 +21,28 @@ New release are tested using Playwright integration tests. Currenttly tested flo
 
 - Login flow using Master password and/or SSO
 - 2FA using email and TOTP (with/without SSO)
+- Role mapping (acces to admin console)
 
 Goal will be to continue to increase the test coverage but I would recommand to always deploy a specific version and always backup/test before deploying a new release.
 
 ## Configuration
 
 See details in [SSO.md](SSO.md).
+
+## Additionnal features
+
+This branch now contain features not added to the SSO [PR](https://github.com/dani-garcia/vaultwarden/pull/3899) since it would slow even more it's review.
+
+### Role mapping
+
+Allow to map roles from the Access token to users to grant access to `VaultWarden` `admin` console.
+Support two roles: `admin` or `user`.
+
+This feature is controlled by the following conf:
+
+- `SSO_ROLES_ENABLED`: control if the mapping is done, default is `false`
+- `SSO_ROLES_DEFAULT_TO_USER`: do not block login in case of missing or invalid roles, default is `true`.
+- `SSO_ROLES_TOKEN_PATH=/resource_access/${SSO_CLIENT_ID}/roles`: path to read roles in the Access token
 
 ## Docker
 
