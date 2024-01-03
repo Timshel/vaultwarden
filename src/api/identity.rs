@@ -2,7 +2,7 @@ use chrono::{NaiveDateTime, Utc};
 use num_traits::FromPrimitive;
 use rocket::{
     form::{Form, FromForm},
-    http::Status,
+    http::{CookieJar, Status},
     response::Redirect,
     serde::json::Json,
     Route,
@@ -11,6 +11,7 @@ use serde_json::Value;
 
 use crate::{
     api::{
+        admin,
         core::{
             accounts::{PreloginData, RegisterData, _prelogin, _register, kdf_upgrade},
             log_user_event,
@@ -33,7 +34,12 @@ pub fn routes() -> Vec<Route> {
 }
 
 #[post("/connect/token", data = "<data>")]
-async fn login(data: Form<ConnectData>, client_header: ClientHeaders, mut conn: DbConn) -> JsonResult {
+async fn login(
+    data: Form<ConnectData>,
+    client_header: ClientHeaders,
+    cookies: &CookieJar<'_>,
+    mut conn: DbConn,
+) -> JsonResult {
     let data: ConnectData = data.into_inner();
 
     let mut user_id: Option<UserId> = None;
@@ -75,7 +81,7 @@ async fn login(data: Form<ConnectData>, client_header: ClientHeaders, mut conn: 
             _check_is_some(&data.device_name, "device_name cannot be blank")?;
             _check_is_some(&data.device_type, "device_type cannot be blank")?;
 
-            _sso_login(data, &mut user_id, &mut conn, &client_header.ip).await
+            _sso_login(data, &mut user_id, &mut conn, cookies, &client_header.ip).await
         }
         "authorization_code" => err!("SSO sign-in is not available"),
         t => err!("Invalid type", t),
@@ -147,7 +153,13 @@ async fn _refresh_login(data: ConnectData, conn: &mut DbConn) -> JsonResult {
 }
 
 // After exchanging the code we need to check first if 2FA is needed before continuing
-async fn _sso_login(data: ConnectData, user_id: &mut Option<UserId>, conn: &mut DbConn, ip: &ClientIp) -> JsonResult {
+async fn _sso_login(
+    data: ConnectData,
+    user_id: &mut Option<UserId>,
+    conn: &mut DbConn,
+    cookies: &CookieJar<'_>,
+    ip: &ClientIp,
+) -> JsonResult {
     AuthMethod::Sso.check_scope(data.scope.as_ref())?;
 
     // Ratelimit the login
@@ -281,6 +293,11 @@ async fn _sso_login(data: ConnectData, user_id: &mut Option<UserId>, conn: &mut 
 
     // Set the user_uuid here to be passed back used for event logging.
     *user_id = Some(user.uuid.clone());
+
+    if auth_user.is_admin() {
+        info!("User {} logged with admin cookie", user.email);
+        cookies.add(admin::create_admin_cookie());
+    }
 
     let auth_tokens = sso::create_auth_tokens(
         &device,
