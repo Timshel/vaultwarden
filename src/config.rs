@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::env::consts::EXE_SUFFIX;
 use std::process::exit;
 use std::sync::RwLock;
@@ -642,6 +643,12 @@ make_config! {
         sso_roles_default_to_user:      bool,   false,   def,    true;
         /// Id token path to read roles
         sso_roles_token_path:           String, false,  auto,   |c| format!("/resource_access/{}/roles", c.sso_client_id);
+        /// Invite users to Organizations
+        sso_organizations_invite:       bool,   false,   def,    false;
+        /// Id token path to read Organization/Groups
+        sso_organizations_token_path:   String, false,   def,    "/groups".to_string();
+        /// Organization Id mapping
+        sso_organizations_id_mapping:   String, true,   def,    String::new();
         /// Client cache for discovery endpoint. Duration in seconds (0 or less to disable).
         sso_client_cache_expiration:    u64,    true,   def,    0;
         /// Log all tokens
@@ -1158,6 +1165,24 @@ fn parse_param_list(config: String) -> Vec<(String, String)> {
         .collect()
 }
 
+fn parse_as_hashmap(config: String) -> HashMap<String, String> {
+    config
+        .split(';')
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .filter_map(|l| {
+            let split = l.split(':').collect::<Vec<&str>>();
+            match &split[..] {
+                [key, value] => Some(((*key).to_string(), (*value).to_string())),
+                _ => {
+                    println!("[WARNING] Failed to parse ({l}). Expected key:value;");
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
 impl Config {
     pub fn load() -> Result<Self, Error> {
         // Loading from env and file
@@ -1362,6 +1387,10 @@ impl Config {
 
     pub fn sso_authorize_extra_params_vec(&self) -> Vec<(String, String)> {
         parse_param_list(self.sso_authorize_extra_params())
+    }
+
+    pub fn sso_organizations_id_mapping_map(&self) -> HashMap<String, String> {
+        parse_as_hashmap(self.sso_organizations_id_mapping())
     }
 }
 
