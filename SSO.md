@@ -23,7 +23,10 @@ The following configurations are available
  - `SSO_CLIENT_ID` : Client Id
  - `SSO_CLIENT_SECRET` : Client Secret
  - `SSO_MASTER_PASSWORD_POLICY`: Optional Master password policy
- - `SSO_AUTH_ONLY_NOT_SESSION`: Enable to use SSO only for authentication not session lifecycle
+ - `SSO_AUTH_ONLY_NOT_SESSION`: Enable to use SSO only for authentication not session lifecycle.
+ - `SSO_ROLES_ENABLED`: control if the mapping is done, default is `false`
+ - `SSO_ROLES_DEFAULT_TO_USER`: do not block login in case of missing or invalid roles, default is `true`.
+ - `SSO_ROLES_TOKEN_PATH=/resource_access/${SSO_CLIENT_ID}/roles`: path to read roles in the Id token
  - `SSO_DEBUG_TOKENS`: Log all tokens for easier debugging (default `false`)
 
 The callback url is : `https://your.domain/identity/connect/oidc-signin`
