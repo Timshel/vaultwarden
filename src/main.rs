@@ -47,6 +47,7 @@ mod auth;
 mod config;
 mod crypto;
 #[macro_use]
+mod business;
 mod db;
 mod http_client;
 mod mail;
