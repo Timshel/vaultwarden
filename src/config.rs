@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     env::consts::EXE_SUFFIX,
     process::exit,
     sync::{
@@ -7,11 +8,14 @@ use std::{
     },
 };
 
+use itertools::Either;
 use job_scheduler_ng::Schedule;
 use once_cell::sync::Lazy;
 use reqwest::Url;
+use uuid::Uuid;
 
 use crate::{
+    db::models::OrganizationId,
     db::DbConnType,
     error::Error,
     util::{get_env, get_env_bool, get_web_vault_version, is_valid_email, parse_experimental_client_feature_flags},
@@ -520,6 +524,9 @@ make_config! {
         /// because this provides unauthenticated access to potentially sensitive data.
         show_password_hint:     bool,   true,   def,    false;
 
+        /// Organization invitation auto accept |> Activated if email is disabled
+        organization_invite_auto_accept: bool, true, def, false;
+
         /// Admin token/Argon2 PHC |> The plain text token or Argon2 PHC string used to authenticate in this very same page. Changing it here will not deauthorize the current session!
         admin_token:            Pass,   true,   option;
 
@@ -692,6 +699,20 @@ make_config! {
         sso_roles_default_to_user:      bool,   false,   def,    true;
         /// Id token path to read roles
         sso_roles_token_path:           String, false,  auto,   |c| format!("/resource_access/{}/roles", c.sso_client_id);
+        /// Invite users to Organizations |> Deprecated, More details [README.md](https://github.com/timshel/vaultwarden/blob/1.34.1-1/README.md#deprecation)
+        sso_organizations_invite:       bool,   false,   def,    false;
+        /// Organizations mapping |> Enable the mapping of organization, membership role and groups.
+        sso_organizations_enabled:      bool,   false,   def,    false;
+        /// Process revocation
+        sso_organizations_revocation:   bool,   false,   def,    false;
+        /// Id token path to read Organization/Groups
+        sso_organizations_token_path:   String, false,   def,    "/groups".to_string();
+        /// Organization Id mapping |> Deprecated. More details [README.md](https://github.com/timshel/vaultwarden/blob/1.34.1-1/README.md#deprecation)
+        sso_organizations_id_mapping:   String, true,   def,    String::new();
+        /// Emable organization group mapping |> Deprecated, More details [README.md](https://github.com/timshel/vaultwarden/blob/1.34.1-1/README.md#deprecation)
+        sso_organizations_groups_enabled: bool, false, def, false;
+        /// Grant acceess to all collections
+        sso_organizations_all_collections: bool, true,  def,   true;
         /// Client cache for discovery endpoint. |> Duration in seconds (0 or less to disable). More details: https://github.com/dani-garcia/vaultwarden/blob/sso-support/SSO.md#client-cache
         sso_client_cache_expiration:    u64,    true,   def,    0;
         /// Log all tokens |> `LOG_LEVEL=debug` or `LOG_LEVEL=info,vaultwarden::sso=debug` is required
@@ -944,6 +965,18 @@ fn validate_config(cfg: &ConfigItems) -> Result<(), Error> {
         internal_sso_redirect_url(&cfg.sso_callback_path)?;
         check_master_password_policy(&cfg.sso_master_password_policy)?;
         internal_sso_authorize_extra_params_vec(&cfg.sso_authorize_extra_params)?;
+
+        if cfg.sso_organizations_invite && !cfg.sso_organizations_enabled {
+            warn!("SSO_ORGANIZATIONS_INVITE is DEPRECATED, replaced by SSO_ORGANIZATIONS_ENABLED");
+        }
+
+        if !cfg.sso_organizations_id_mapping.is_empty() {
+            warn!("SSO_ORGANIZATIONS_ID_MAPPING is now DEPRECATED, More details: https://github.com/timshel/vaultwarden/blob/1.34.1-1/README.md#deprecation");
+        }
+
+        if cfg.org_groups_enabled && !cfg.sso_organizations_groups_enabled {
+            warn!("SSO_ORGANIZATIONS_GROUPS_ENABLED is DEPRECATED, More details: https://github.com/timshel/vaultwarden/blob/1.34.1-1/README.md#deprecation");
+        }
     }
 
     if cfg._enable_yubico {
@@ -1249,6 +1282,24 @@ fn parse_param_list(config: String, separator: char, kv_separator: char) -> Resu
         .collect()
 }
 
+fn parse_as_hashmap<V, F: Fn(String) -> V>(config: String, f: F) -> HashMap<String, V> {
+    config
+        .split(';')
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .filter_map(|l| {
+            let split = l.split(':').collect::<Vec<&str>>();
+            match &split[..] {
+                [key, value] => Some(((*key).to_string(), f((*value).to_string()))),
+                _ => {
+                    println!("[WARNING] Failed to parse ({l}). Expected key:value;");
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
 impl Config {
     pub fn load() -> Result<Self, Error> {
         // Loading from env and file
@@ -1470,6 +1521,13 @@ impl Config {
     pub fn sso_authorize_extra_params_vec(&self) -> Result<Vec<(String, String)>, Error> {
         internal_sso_authorize_extra_params_vec(&self.sso_authorize_extra_params())
     }
+
+    pub fn sso_organizations_id_mapping_map(&self) -> HashMap<String, Either<String, OrganizationId>> {
+        parse_as_hashmap(self.sso_organizations_id_mapping(), |str| match Uuid::parse_str(&str) {
+            Ok(_) => Either::Right(str.into()),
+            Err(_) => Either::Left(str),
+        })
+    }
 }
 
 use handlebars::{
@@ -1532,6 +1590,7 @@ where
     reg!("email/register_verify_email", ".html");
     reg!("email/send_2fa_removed_from_org", ".html");
     reg!("email/send_emergency_access_invite", ".html");
+    reg!("email/send_org_enrolled", ".html");
     reg!("email/send_org_invite", ".html");
     reg!("email/send_single_org_removed_from_org", ".html");
     reg!("email/smtp_test", ".html");
