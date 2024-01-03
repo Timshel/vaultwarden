@@ -11,6 +11,7 @@ use crate::{
         EmptyResult, JsonResult, Notify, PasswordOrOtpData, UpdateType,
     },
     auth::{decode_invite, AdminHeaders, Headers, ManagerHeaders, ManagerHeadersLoose, OrgMemberHeaders, OwnerHeaders},
+    business::organization_logic,
     db::{models::*, DbConn},
     mail,
     util::{convert_json_key_lcase_first, get_uuid, NumberOrString},
@@ -126,6 +127,7 @@ struct OrgData {
 struct OrganizationUpdateData {
     billing_email: String,
     name: String,
+    external_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -308,6 +310,13 @@ async fn post_organization(
     org.name = data.name;
     org.billing_email = data.billing_email.to_lowercase();
 
+    // External Id field is active only when SSO and Org mapping are enabled
+    if CONFIG.sso_enabled() && (CONFIG.sso_organizations_invite() || CONFIG.sso_organizations_enabled()) {
+        org.external_id = data.external_id;
+    } else {
+        org.external_id = None;
+    }
+
     org.save(&mut conn).await?;
 
     log_event(
@@ -339,8 +348,7 @@ async fn get_user_collections(headers: Headers, mut conn: DbConn) -> Json<Value>
 }
 
 // Called during the SSO enrollment
-// The `identifier` should be the value returned by `get_org_domain_sso_details`
-// The returned `Id` will then be passed to `get_master_password_policy` which will mainly ignore it
+// We return the org_id if it exists ortherwise we return the first associated with the user
 #[get("/organizations/<identifier>/auto-enroll-status")]
 async fn get_auto_enroll_status(identifier: &str, headers: Headers, mut conn: DbConn) -> JsonResult {
     let org = if identifier == crate::sso::FAKE_IDENTIFIER {
@@ -973,7 +981,6 @@ struct OrgDomainDetails {
 
 // Returning a Domain/Organization here allow to prefill it and prevent prompting the user
 // So we either return an Org name associated to the user or a dummy value.
-// The `verifiedDate` is required but the value ATM is ignored.
 #[post("/organizations/domain/sso/details", data = "<data>")]
 async fn get_org_domain_sso_details(data: Json<OrgDomainDetails>, mut conn: DbConn) -> JsonResult {
     let data: OrgDomainDetails = data.into_inner();
@@ -1089,7 +1096,7 @@ async fn send_invite(
     let raw_type = &data.r#type.into_string();
     // Membership::from_str will convert custom (4) to manager (3)
     let new_type = match MembershipType::from_str(raw_type) {
-        Some(new_type) => new_type as i32,
+        Some(new_type) => new_type,
         None => err!("Invalid type"),
     };
 
@@ -1107,8 +1114,14 @@ async fn send_invite(
             && data.permissions.get("createNewCollections") == Some(&json!(true)));
 
     let mut user_created: bool = false;
+    let collections = data.collections.into_iter().flatten().collect();
+
+    let org = match Organization::find_by_uuid(&org_id, &mut conn).await {
+        Some(org) => org,
+        None => err!("Error looking up organization"),
+    };
+
     for email in data.emails.iter() {
-        let mut member_status = MembershipStatus::Invited as i32;
         let user = match User::find_by_mail(email, &mut conn).await {
             None => {
                 if !CONFIG.invitations_allowed() {
@@ -1131,83 +1144,34 @@ async fn send_invite(
             Some(user) => {
                 if Membership::find_by_user_and_org(&user.uuid, &org_id, &mut conn).await.is_some() {
                     err!(format!("User already in organization: {email}"))
-                } else {
-                    // automatically accept existing users if mail is disabled
-                    if !CONFIG.mail_enabled() && !user.password_hash.is_empty() {
-                        member_status = MembershipStatus::Accepted as i32;
-                    }
-                    user
                 }
+                user
             }
         };
 
-        let mut new_member = Membership::new(user.uuid.clone(), org_id.clone(), Some(headers.user.email.clone()));
-        new_member.access_all = access_all;
-        new_member.atype = new_type;
-        new_member.status = member_status;
-        new_member.save(&mut conn).await?;
-
-        if CONFIG.mail_enabled() {
-            let org_name = match Organization::find_by_uuid(&org_id, &mut conn).await {
-                Some(org) => org.name,
-                None => err!("Error looking up organization"),
-            };
-
-            if let Err(e) = mail::send_invite(
-                &user,
-                org_id.clone(),
-                new_member.uuid.clone(),
-                &org_name,
-                Some(headers.user.email.clone()),
-            )
-            .await
-            {
-                // Upon error delete the user, invite and org member records when needed
-                if user_created {
-                    user.delete(&mut conn).await?;
-                } else {
-                    new_member.delete(&mut conn).await?;
-                }
-
-                err!(format!("Error sending invite: {e:?} "));
-            }
-        }
-
-        log_event(
-            EventType::OrganizationUserInvited as i32,
-            &new_member.uuid,
-            &org_id,
+        if let Err(e) = organization_logic::invite(
             &headers.user.uuid,
-            headers.device.atype,
-            &headers.ip.ip,
+            &headers.device,
+            &headers.ip,
+            &org,
+            &user,
+            new_type,
+            &data.groups,
+            access_all,
+            &collections,
+            headers.user.email.clone(),
+            false,
             &mut conn,
         )
-        .await;
-
-        // If no accessAll, add the collections received
-        if !access_all {
-            for col in data.collections.iter().flatten() {
-                match Collection::find_by_uuid_and_org(&col.id, &org_id, &mut conn).await {
-                    None => err!("Collection not found in Organization"),
-                    Some(collection) => {
-                        CollectionUser::save(
-                            &user.uuid,
-                            &collection.uuid,
-                            col.read_only,
-                            col.hide_passwords,
-                            col.manage,
-                            &mut conn,
-                        )
-                        .await?;
-                    }
-                }
+        .await
+        {
+            // Upon error delete the user, invite and org member records when needed
+            if user_created {
+                user.delete(&mut conn).await?;
             }
-        }
 
-        for group_id in data.groups.iter() {
-            let mut group_entry = GroupUser::new(group_id.clone(), new_member.uuid.clone());
-            group_entry.save(&mut conn).await?;
-        }
+            return Err(e);
+        };
     }
 
     Ok(())
@@ -1604,11 +1568,10 @@ async fn edit_member(
     // HACK: This converts the Custom role which has the `Manage all collections` box checked into an access_all flag
     // Since the parent checkbox is not sent to the server we need to check and verify the child checkboxes
     // If the box is not checked, the user will still be a manager, but not with the access_all permission
-    let access_all = new_type >= MembershipType::Admin
-        || (raw_type.eq("4")
-            && data.permissions.get("editAnyCollection") == Some(&json!(true))
-            && data.permissions.get("deleteAnyCollection") == Some(&json!(true))
-            && data.permissions.get("createNewCollections") == Some(&json!(true)));
+    let custom_access_all = raw_type.eq("4")
+        && data.permissions.get("editAnyCollection") == Some(&json!(true))
+        && data.permissions.get("deleteAnyCollection") == Some(&json!(true))
+        && data.permissions.get("createNewCollections") == Some(&json!(true));
 
     let mut member_to_edit = match Membership::find_by_uuid_and_org(&member_id, &org_id, &mut conn).await {
         Some(member) => member,
@@ -1626,36 +1589,16 @@ async fn edit_member(
         err!("Only Owners can edit Owner users")
     }
 
-    if member_to_edit.atype == MembershipType::Owner
-        && new_type != MembershipType::Owner
-        && member_to_edit.status == MembershipStatus::Confirmed as i32
-    {
-        // Removing owner permission, check that there is at least one other confirmed owner
-        if Membership::count_confirmed_by_org_and_type(&org_id, MembershipType::Owner, &mut conn).await <= 1 {
-            err!("Can't delete the last owner")
-        }
-    }
-
-    // This check is also done at accept_invite, _confirm_invite, _activate_member, edit_member, admin::update_membership_type
-    // It returns different error messages per function.
-    if new_type < MembershipType::Admin {
-        match OrgPolicy::is_user_allowed(&member_to_edit.user_uuid, &org_id, true, &mut conn).await {
-            Ok(_) => {}
-            Err(OrgPolicyErr::TwoFactorMissing) => {
-                if CONFIG.email_2fa_auto_fallback() {
-                    two_factor::email::find_and_activate_email_2fa(&member_to_edit.user_uuid, &mut conn).await?;
-                } else {
-                    err!("You cannot modify this user to this type because they have not setup 2FA");
-                }
-            }
-            Err(OrgPolicyErr::SingleOrgEnforced) => {
-                err!("You cannot modify this user to this type because they are a member of an organization which forbids it");
-            }
-        }
-    }
-
-    member_to_edit.access_all = access_all;
-    member_to_edit.atype = new_type as i32;
+    organization_logic::set_membership_type(
+        &headers.user.uuid,
+        &headers.device,
+        &headers.ip,
+        &mut member_to_edit,
+        new_type,
+        custom_access_all,
+        &mut conn,
+    )
+    .await?;
 
     // Delete all the odd collections
     for c in CollectionUser::find_by_organization_and_user_uuid(&org_id, &member_to_edit.user_uuid, &mut conn).await {
@@ -1663,7 +1606,7 @@ async fn edit_member(
     }
 
     // If no accessAll, add the collections received
-    if !access_all {
+    if !member_to_edit.access_all {
         for col in data.collections.iter().flatten() {
             match Collection::find_by_uuid_and_org(&col.id, &org_id, &mut conn).await {
                 None => err!("Collection not found in Organization"),
@@ -1689,18 +1632,7 @@ async fn edit_member(
         group_entry.save(&mut conn).await?;
     }
 
-    log_event(
-        EventType::OrganizationUserUpdated as i32,
-        &member_to_edit.uuid,
-        &org_id,
-        &headers.user.uuid,
-        headers.device.atype,
-        &headers.ip.ip,
-        &mut conn,
-    )
-    .await;
-
-    member_to_edit.save(&mut conn).await
+    Ok(())
 }
 
 #[delete("/organizations/<org_id>/users", data = "<data>")]
@@ -2505,32 +2437,15 @@ async fn _revoke_member(
         err!("Organization not found", "Organization id's do not match");
     }
     match Membership::find_by_uuid_and_org(member_id, org_id, conn).await {
-        Some(mut member) if member.status > MembershipStatus::Revoked as i32 => {
+        Some(member) if !member.is_revoked() => {
             if member.user_uuid == headers.user.uuid {
                 err!("You cannot revoke yourself")
             }
             if member.atype == MembershipType::Owner && headers.membership_type != MembershipType::Owner {
                 err!("Only owners can revoke other owners")
             }
-            if member.atype == MembershipType::Owner
-                && Membership::count_confirmed_by_org_and_type(org_id, MembershipType::Owner, conn).await <= 1
-            {
-                err!("Organization must have at least one confirmed owner")
-            }
 
-            member.revoke();
-            member.save(conn).await?;
-
-            log_event(
-                EventType::OrganizationUserRevoked as i32,
-                &member.uuid,
-                org_id,
-                &headers.user.uuid,
-                headers.device.atype,
-                &headers.ip.ip,
-                conn,
-            )
-            .await;
+            organization_logic::revoke_member(&headers.user.uuid, &headers.device, &headers.ip, member, conn).await?
         }
         Some(_) => err!("User is already revoked"),
         None => err!("User not found in organization"),
@@ -2623,37 +2538,8 @@ async fn _restore_member(
                 err!("Only owners can restore other owners")
             }
 
-            // This check is also done at accept_invite, _confirm_invite, _activate_member, edit_member, admin::update_membership_type
-            // It returns different error messages per function.
-            if member.atype < MembershipType::Admin {
-                match OrgPolicy::is_user_allowed(&member.user_uuid, org_id, false, conn).await {
-                    Ok(_) => {}
-                    Err(OrgPolicyErr::TwoFactorMissing) => {
-                        if CONFIG.email_2fa_auto_fallback() {
-                            two_factor::email::find_and_activate_email_2fa(&member.user_uuid, conn).await?;
-                        } else {
-                            err!("You cannot restore this user because they have not setup 2FA");
-                        }
-                    }
-                    Err(OrgPolicyErr::SingleOrgEnforced) => {
-                        err!("You cannot restore this user because they are a member of an organization which forbids it");
-                    }
-                }
-            }
-
-            member.restore();
-            member.save(conn).await?;
-
-            log_event(
-                EventType::OrganizationUserRestored as i32,
-                &member.uuid,
-                org_id,
-                &headers.user.uuid,
-                headers.device.atype,
-                &headers.ip.ip,
-                conn,
-            )
-            .await;
+            organization_logic::restore_member(&headers.user.uuid, &headers.device, &headers.ip, &mut member, conn)
+                .await?;
         }
         Some(_) => err!("User is already active"),
         None => err!("User not found in organization"),
@@ -2726,8 +2612,16 @@ impl GroupRequest {
     pub fn update_group(&self, mut group: Group) -> Group {
         group.name.clone_from(&self.name);
         group.access_all = self.access_all;
-        // Group Updates do not support changing the external_id
+
+        // By default Group Updates do not support changing the external_id
         // These input fields are in a disabled state, and can only be updated/added via ldap_import
+        // But we reuse the field for SSO organization mapping.
+        if CONFIG.sso_enabled()
+            && (CONFIG.sso_organizations_invite() || CONFIG.sso_organizations_enabled())
+            && CONFIG.org_groups_enabled()
+        {
+            group.external_id = self.external_id.clone();
+        }
 
         group
     }
@@ -2735,11 +2629,11 @@ impl GroupRequest {
 
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct CollectionData {
-    id: CollectionId,
-    read_only: bool,
-    hide_passwords: bool,
-    manage: bool,
+pub struct CollectionData {
+    pub id: CollectionId,
+    pub read_only: bool,
+    pub hide_passwords: bool,
+    pub manage: bool,
 }
 
 impl CollectionData {
@@ -3028,21 +2922,17 @@ async fn put_group_members(
 
     GroupUser::delete_all_by_group(&group_id, &mut conn).await?;
 
-    let assigned_members = data.into_inner();
-    for assigned_member in assigned_members {
-        let mut user_entry = GroupUser::new(group_id.clone(), assigned_member.clone());
-        user_entry.save(&mut conn).await?;
-
-        log_event(
-            EventType::OrganizationUserUpdatedGroups as i32,
-            &assigned_member,
-            &org_id,
+    for assigned_member in data.into_inner() {
+        organization_logic::add_group_user(
             &headers.user.uuid,
-            headers.device.atype,
-            &headers.ip.ip,
+            &headers.device,
+            &headers.ip,
+            &org_id,
+            assigned_member,
+            &group_id,
             &mut conn,
         )
-        .await;
+        .await?;
     }
 
     Ok(())
@@ -3112,20 +3002,17 @@ async fn put_user_groups(
 
     let assigned_group_ids = data.into_inner();
     for assigned_group_id in assigned_group_ids.group_ids {
-        let mut group_user = GroupUser::new(assigned_group_id.clone(), member_id.clone());
-        group_user.save(&mut conn).await?;
+        organization_logic::add_group_user(
+            &headers.user.uuid,
+            &headers.device,
+            &headers.ip,
+            &org_id,
+            member_id.clone(),
+            &assigned_group_id,
+            &mut conn,
+        )
+        .await?;
     }
-
-    log_event(
-        EventType::OrganizationUserUpdatedGroups as i32,
-        &member_id,
-        &org_id,
-        &headers.user.uuid,
-        headers.device.atype,
-        &headers.ip.ip,
-        &mut conn,
-    )
-    .await;
 
     Ok(())
 }
@@ -3164,18 +3051,16 @@ async fn delete_group_member(
         err!("Group could not be found or does not belong to the organization.");
     }
 
-    log_event(
-        EventType::OrganizationUserUpdatedGroups as i32,
-        &member_id,
-        &org_id,
+    organization_logic::delete_group_user(
         &headers.user.uuid,
-        headers.device.atype,
-        &headers.ip.ip,
+        &headers.device,
+        &headers.ip,
+        &org_id,
+        &member_id,
+        &group_id,
         &mut conn,
     )
-    .await;
-
-    GroupUser::delete_by_group_and_member(&group_id, &member_id, &mut conn).await
+    .await
 }
 
 #[derive(Deserialize)]

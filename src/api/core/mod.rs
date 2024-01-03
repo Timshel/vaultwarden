@@ -3,7 +3,7 @@ mod ciphers;
 mod emergency_access;
 mod events;
 mod folders;
-mod organizations;
+pub mod organizations;
 mod public;
 mod sends;
 pub mod two_factor;
@@ -225,6 +225,10 @@ fn config() -> Json<Value> {
         },
         "settings": {
             "disableUserRegistration": crate::CONFIG.is_signup_disabled(),
+            "ssoEnabled": crate::CONFIG.sso_enabled(),
+            "ssoOnly": crate::CONFIG.sso_enabled() && crate::CONFIG.sso_only(),
+            "ssoOrgExternalId": crate::CONFIG.sso_enabled() && (crate::CONFIG.sso_organizations_invite() || crate::CONFIG.sso_organizations_enabled()),
+            "ssoOrgGroupExternalId": crate::CONFIG.sso_enabled() && (crate::CONFIG.sso_organizations_invite() || crate::CONFIG.sso_organizations_enabled()) && crate::CONFIG.org_groups_enabled(),
         },
         "environment": {
           "vault": domain,
@@ -265,7 +269,11 @@ async fn accept_org_invite(
     reset_password_key: Option<String>,
     conn: &mut DbConn,
 ) -> EmptyResult {
-    if member.status != MembershipStatus::Invited as i32 {
+    if !(member.status == MembershipStatus::Invited as i32
+        || (member.status == MembershipStatus::Accepted as i32
+            && crate::CONFIG.sso_enabled()
+            && crate::CONFIG.organization_invite_auto_accept()))
+    {
         err!("User already accepted the invitation");
     }
 

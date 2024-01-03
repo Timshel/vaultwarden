@@ -1,5 +1,9 @@
+#![allow(unused_qualifications)]
+
 use chrono::{NaiveDateTime, Utc};
 use derive_more::{AsRef, Deref, Display, From};
+use diesel::sql_query;
+use diesel::sql_types::{Nullable, Text};
 use num_traits::FromPrimitive;
 use serde_json::Value;
 use std::{
@@ -15,7 +19,7 @@ use crate::CONFIG;
 use macros::UuidFromParam;
 
 db_object! {
-    #[derive(Identifiable, Queryable, Insertable, AsChangeset)]
+    #[derive(Identifiable, Queryable, QueryableByName, Insertable, AsChangeset)]
     #[diesel(table_name = organizations)]
     #[diesel(treat_none_as_null = true)]
     #[diesel(primary_key(uuid))]
@@ -25,6 +29,7 @@ db_object! {
         pub billing_email: String,
         pub private_key: Option<String>,
         pub public_key: Option<String>,
+        pub external_id: Option<String>,
     }
 
     #[derive(Identifiable, Queryable, Insertable, AsChangeset)]
@@ -59,7 +64,7 @@ db_object! {
 }
 
 // https://github.com/bitwarden/server/blob/9ebe16587175b1c0e9208f84397bb75d0d595510/src/Core/AdminConsole/Enums/OrganizationUserStatusType.cs
-#[derive(PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum MembershipStatus {
     Revoked = -1,
     Invited = 0,
@@ -80,7 +85,7 @@ impl MembershipStatus {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, num_derive::FromPrimitive)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, num_derive::FromPrimitive)]
 pub enum MembershipType {
     Owner = 0,
     Admin = 1,
@@ -177,6 +182,7 @@ impl Organization {
             billing_email,
             private_key,
             public_key,
+            external_id: None,
         }
     }
     // https://github.com/bitwarden/server/blob/9ebe16587175b1c0e9208f84397bb75d0d595510/src/Api/AdminConsole/Models/Response/Organizations/OrganizationResponseModel.cs
@@ -226,6 +232,9 @@ impl Organization {
             "planType": 6, // Custom plan
             "usersGetPremium": true,
             "object": "organization",
+
+            // Custom field used for SSO org mapping
+            "externalId": self.external_id,
         })
     }
 }
@@ -254,8 +263,12 @@ impl Membership {
         }
     }
 
+    pub fn is_revoked(&self) -> bool {
+        self.status < MembershipStatus::Invited as i32
+    }
+
     pub fn restore(&mut self) -> bool {
-        if self.status < MembershipStatus::Invited as i32 {
+        if self.is_revoked() {
             self.status += ACTIVATE_REVOKE_DIFF;
             return true;
         }
@@ -263,7 +276,7 @@ impl Membership {
     }
 
     pub fn revoke(&mut self) -> bool {
-        if self.status > MembershipStatus::Revoked as i32 {
+        if !self.is_revoked() {
             self.status -= ACTIVATE_REVOKE_DIFF;
             return true;
         }
@@ -272,7 +285,7 @@ impl Membership {
 
     /// Return the status of the user in an unrevoked state
     pub fn get_unrevoked_status(&self) -> i32 {
-        if self.status <= MembershipStatus::Revoked as i32 {
+        if self.is_revoked() {
             return self.status + ACTIVATE_REVOKE_DIFF;
         }
         self.status
@@ -322,6 +335,18 @@ use crate::db::DbConn;
 
 use crate::api::EmptyResult;
 use crate::error::MapResult;
+
+#[derive(Debug, QueryableByName)]
+struct OrgGroupSearch {
+    #[diesel(sql_type = Text)]
+    ogs_name_id: String,
+
+    #[diesel(sql_type = Nullable<Text>)]
+    ogs_group: Option<String>,
+
+    #[diesel(sql_type = Nullable<Text>)]
+    ogs_group_uuid: Option<GroupId>,
+}
 
 /// Database methods
 impl Organization {
@@ -392,6 +417,21 @@ impl Organization {
         }}
     }
 
+    pub async fn find_by_uuids_or_names(
+        uuids: &Vec<OrganizationId>,
+        names: &Vec<String>,
+        conn: &mut DbConn,
+    ) -> Vec<Self> {
+        db_run! { conn: {
+            organizations::table
+                .filter(
+                    organizations::uuid.eq_any(uuids).or(organizations::name.eq_any(names))
+                )
+                .load::<OrganizationDb>(conn)
+                .expect("Error loading organizations").from_db()
+        }}
+    }
+
     pub async fn find_by_name(name: &str, conn: &mut DbConn) -> Option<Self> {
         db_run! { conn: {
             organizations::table
@@ -421,6 +461,40 @@ impl Organization {
                 .first::<OrganizationDb>(conn)
                 .ok().from_db()
         }}
+    }
+
+    pub async fn find_mapped_orgs_and_groups(
+        params: Vec<(String, Option<String>)>,
+        conn: &mut DbConn,
+    ) -> Vec<(String, Option<String>, Self, Option<GroupId>)> {
+        if !params.is_empty() {
+            db_run! { conn: {
+                let values = std::iter::repeat_n("(?, ?)", params.len()).collect::<Vec<&str>>().join(",");
+
+                let mut query = sql_query(format!(r#"
+                    select keys.column1 AS ogs_name_id, keys.column2 AS ogs_group, organizations.*, groups.uuid AS ogs_group_uuid
+                        from ( VALUES {} ) AS keys
+                        left join organizations
+                        left join groups on groups.organizations_uuid = organizations.uuid  AND ( groups.name = keys.column2 or groups.external_id = keys.column1 )
+                        where ( organizations.name = keys.column1 AND groups.name = keys.column2)
+                            OR ((organizations.name = keys.column1 OR organizations.external_id = keys.column1) AND groups.uuid is null AND keys.column2 is null )
+                            OR (groups.external_id = keys.column1 AND keys.column2 is null);
+                "#, values)).into_boxed();
+
+                for (id, group) in params {
+                    query = query.bind::<Text, _>(id).bind::<Nullable<Text>, _>(group);
+                }
+
+                query
+                    .load::<(OrgGroupSearch, OrganizationDb)>(conn)
+                    .expect("Error testing raw query")
+                    .into_iter()
+                    .map(|(ogs, org)| (ogs.ogs_name_id, ogs.ogs_group, org.from_db(), ogs.ogs_group_uuid) )
+                    .collect()
+            }}
+        } else {
+            Vec::new()
+        }
     }
 }
 

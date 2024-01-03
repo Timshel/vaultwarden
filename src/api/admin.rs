@@ -106,7 +106,7 @@ const BASE_TEMPLATE: &str = "admin/base";
 const ACTING_ADMIN_USER: &str = "vaultwarden-admin-00000-000000000000";
 pub const FAKE_ADMIN_UUID: &str = "00000000-0000-0000-0000-000000000000";
 
-fn admin_path() -> String {
+pub fn admin_path() -> String {
     format!("{}{ADMIN_PATH}", CONFIG.domain_path())
 }
 
