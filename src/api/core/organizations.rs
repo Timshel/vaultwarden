@@ -14,6 +14,7 @@ use crate::{
         decode_invite, AdminHeaders, ClientVersion, Headers, ManagerHeaders, ManagerHeadersLoose, OrgMemberHeaders,
         OwnerHeaders,
     },
+    business::organization_logic,
     db::{models::*, DbConn},
     mail,
     util::{convert_json_key_lcase_first, get_uuid, NumberOrString},
@@ -957,7 +958,6 @@ struct OrgDomainDetails {
 
 // Returning a Domain/Organization here allow to prefill it and prevent prompting the user
 // So we either return an Org name associated to the user or a dummy value.
-// The `verifiedDate` is required but the value ATM is ignored.
 #[post("/organizations/domain/sso/details", data = "<data>")]
 async fn get_org_domain_sso_details(data: Json<OrgDomainDetails>, mut conn: DbConn) -> JsonResult {
     let data: OrgDomainDetails = data.into_inner();
@@ -1075,7 +1075,7 @@ async fn send_invite(
     let raw_type = &data.r#type.into_string();
     // Membership::from_str will convert custom (4) to manager (3)
     let new_type = match MembershipType::from_str(raw_type) {
-        Some(new_type) => new_type as i32,
+        Some(new_type) => new_type,
         None => err!("Invalid type"),
     };
 
@@ -1095,8 +1095,14 @@ async fn send_invite(
     }
 
     let mut user_created: bool = false;
+    let collections = data.collections.into_iter().flatten().collect();
+
+    let org = match Organization::find_by_uuid(&org_id, &mut conn).await {
+        Some(org) => org,
+        None => err!("Error looking up organization"),
+    };
+
     for email in data.emails.iter() {
-        let mut member_status = MembershipStatus::Invited as i32;
         let user = match User::find_by_mail(email, &mut conn).await {
             None => {
                 if !CONFIG.invitations_allowed() {
@@ -1119,84 +1125,34 @@ async fn send_invite(
             Some(user) => {
                 if Membership::find_by_user_and_org(&user.uuid, &org_id, &mut conn).await.is_some() {
                     err!(format!("User already in organization: {email}"))
-                } else {
-                    // automatically accept existing users if mail is disabled
-                    if !CONFIG.mail_enabled() && !user.password_hash.is_empty() {
-                        member_status = MembershipStatus::Accepted as i32;
-                    }
-                    user
                 }
+                user
             }
         };
 
-        let mut new_member = Membership::new(user.uuid.clone(), org_id.clone(), Some(headers.user.email.clone()));
-        let access_all = data.access_all;
-        new_member.access_all = access_all;
-        new_member.atype = new_type;
-        new_member.status = member_status;
-        new_member.save(&mut conn).await?;
-
-        if CONFIG.mail_enabled() {
-            let org_name = match Organization::find_by_uuid(&org_id, &mut conn).await {
-                Some(org) => org.name,
-                None => err!("Error looking up organization"),
-            };
-
-            if let Err(e) = mail::send_invite(
-                &user,
-                org_id.clone(),
-                new_member.uuid.clone(),
-                &org_name,
-                Some(headers.user.email.clone()),
-            )
-            .await
-            {
-                // Upon error delete the user, invite and org member records when needed
-                if user_created {
-                    user.delete(&mut conn).await?;
-                } else {
-                    new_member.delete(&mut conn).await?;
-                }
-
-                err!(format!("Error sending invite: {e:?} "));
-            }
-        }
-
-        log_event(
-            EventType::OrganizationUserInvited as i32,
-            &new_member.uuid,
-            &org_id,
+        if let Err(e) = organization_logic::invite(
             &headers.user.uuid,
-            headers.device.atype,
-            &headers.ip.ip,
+            &headers.device,
+            &headers.ip,
+            &org,
+            &user,
+            new_type,
+            &data.groups,
+            data.access_all,
+            &collections,
+            headers.user.email.clone(),
+            false,
             &mut conn,
         )
-        .await;
-
-        // If no accessAll, add the collections received
-        if !access_all {
-            for col in data.collections.iter().flatten() {
-                match Collection::find_by_uuid_and_org(&col.id, &org_id, &mut conn).await {
-                    None => err!("Collection not found in Organization"),
-                    Some(collection) => {
-                        CollectionUser::save(
-                            &user.uuid,
-                            &collection.uuid,
-                            col.read_only,
-                            col.hide_passwords,
-                            col.manage,
-                            &mut conn,
-                        )
-                        .await?;
-                    }
-                }
+        .await
+        {
+            // Upon error delete the user, invite and org member records when needed
+            if user_created {
+                user.delete(&mut conn).await?;
             }
-        }
 
-        for group_id in data.groups.iter() {
-            let mut group_entry = GroupUser::new(group_id.clone(), new_member.uuid.clone());
-            group_entry.save(&mut conn).await?;
-        }
+            return Err(e);
+        };
     }
 
     Ok(())
@@ -2458,32 +2414,15 @@ async fn _revoke_member(
     conn: &mut DbConn,
 ) -> EmptyResult {
     match Membership::find_by_uuid_and_org(member_id, org_id, conn).await {
-        Some(mut member) if member.status > MembershipStatus::Revoked as i32 => {
+        Some(member) if !member.is_revoked() => {
             if member.user_uuid == headers.user.uuid {
                 err!("You cannot revoke yourself")
             }
             if member.atype == MembershipType::Owner && headers.membership_type != MembershipType::Owner {
                 err!("Only owners can revoke other owners")
             }
-            if member.atype == MembershipType::Owner
-                && Membership::count_confirmed_by_org_and_type(org_id, MembershipType::Owner, conn).await <= 1
-            {
-                err!("Organization must have at least one confirmed owner")
-            }
 
-            member.revoke();
-            member.save(conn).await?;
-
-            log_event(
-                EventType::OrganizationUserRevoked as i32,
-                &member.uuid,
-                org_id,
-                &headers.user.uuid,
-                headers.device.atype,
-                &headers.ip.ip,
-                conn,
-            )
-            .await;
+            organization_logic::revoke_member(&headers.user.uuid, &headers.device, &headers.ip, member, conn).await?
         }
         Some(_) => err!("User is already revoked"),
         None => err!("User not found in organization"),
@@ -2565,7 +2504,7 @@ async fn _restore_member(
     conn: &mut DbConn,
 ) -> EmptyResult {
     match Membership::find_by_uuid_and_org(member_id, org_id, conn).await {
-        Some(mut member) if member.status < MembershipStatus::Accepted as i32 => {
+        Some(member) if member.status < MembershipStatus::Accepted as i32 => {
             if member.user_uuid == headers.user.uuid {
                 err!("You cannot restore yourself")
             }
@@ -2573,37 +2512,7 @@ async fn _restore_member(
                 err!("Only owners can restore other owners")
             }
 
-            // This check is also done at accept_invite, _confirm_invite, _activate_member, edit_member, admin::update_membership_type
-            // It returns different error messages per function.
-            if member.atype < MembershipType::Admin {
-                match OrgPolicy::is_user_allowed(&member.user_uuid, org_id, false, conn).await {
-                    Ok(_) => {}
-                    Err(OrgPolicyErr::TwoFactorMissing) => {
-                        if CONFIG.email_2fa_auto_fallback() {
-                            two_factor::email::find_and_activate_email_2fa(&member.user_uuid, conn).await?;
-                        } else {
-                            err!("You cannot restore this user because they have not setup 2FA");
-                        }
-                    }
-                    Err(OrgPolicyErr::SingleOrgEnforced) => {
-                        err!("You cannot restore this user because they are a member of an organization which forbids it");
-                    }
-                }
-            }
-
-            member.restore();
-            member.save(conn).await?;
-
-            log_event(
-                EventType::OrganizationUserRestored as i32,
-                &member.uuid,
-                org_id,
-                &headers.user.uuid,
-                headers.device.atype,
-                &headers.ip.ip,
-                conn,
-            )
-            .await;
+            organization_logic::restore_member(&headers.user.uuid, &headers.device, &headers.ip, member, conn).await?;
         }
         Some(_) => err!("User is already active"),
         None => err!("User not found in organization"),
@@ -2671,11 +2580,11 @@ impl GroupRequest {
 
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct CollectionData {
-    id: CollectionId,
-    read_only: bool,
-    hide_passwords: bool,
-    manage: bool,
+pub struct CollectionData {
+    pub id: CollectionId,
+    pub read_only: bool,
+    pub hide_passwords: bool,
+    pub manage: bool,
 }
 
 impl CollectionData {
