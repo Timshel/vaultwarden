@@ -10,15 +10,15 @@ services:
       - ./keycloak_setup.sh:/opt/script/keycloak_setup.sh
   keycloakSetup:
     container_name: keycloakSetup-${ENV:-dev}
-    image: quay.io/keycloak/keycloak
+    image: keycloaksetup
     network_mode: "host"
+    build:
+      context: .
+      dockerfile: setup.dockerfile
     depends_on:
       - keycloak
     restart: "no"
     env_file: ${ENV}.env
-    entrypoint: [ "bash", "-c", "/opt/script/keycloak_setup.sh"]
-    volumes:
-      - ${KC_SETUP_PATH:-.}/keycloak_setup.sh:/opt/script/keycloak_setup.sh
   VaultWarden:
     container_name: oidc-vaultwarden-${ENV:-dev}
     image: oidc-vaultwarden
