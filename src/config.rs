@@ -639,6 +639,12 @@ make_config! {
         sso_master_password_policy:     String, false,  option;
         /// Use sso only for auth not the session lifecycle
         sso_auth_only_not_session:      bool,   true,   def,    false;
+        /// Enable the mapping of roles (user/admin) from the access_token
+        sso_roles_enabled:              bool,   true,   def,    false;
+        /// Missing invalid roles default to user
+        sso_roles_default_to_user:      bool,   true,   def,    true;
+        /// Id token path to read roles
+        sso_roles_token_path:           String, false,  auto,   |c| format!("/resource_access/{}/roles", c.sso_client_id);
         /// Log all tokens
         sso_debug_tokens:               bool,   true,   def,    false;
     },
