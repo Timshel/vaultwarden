@@ -637,6 +637,12 @@ make_config! {
         sso_roles_default_to_user:      bool,   true,   def,    true;
         /// Access token path to read roles
         sso_roles_token_path:           String, false,  auto,   |c| format!("/resource_access/{}/roles", c.sso_client_id);
+        /// Invite users to Organizations
+        sso_organizations_invite:       bool,   true,   def,    false;
+        /// Optional scope to retrieve user Organization/Groups
+        sso_organizations_scope:        String, true,   option;
+        /// Access token path to read Organization/Groups
+        sso_organizations_token_path:   String, true,   def,    "/groups".to_string();
     },
 
     /// Yubikey settings
