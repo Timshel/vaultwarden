@@ -5,9 +5,24 @@ Based on [Timshel/sso-support](https://github.com/Timshel/vaultwarden/tree/sso-s
 
 :warning: Branch will be rebased and forced-pushed from time to time. :warning:
 
+## Additionnal features
+
+This branch now contain additionnal features not added to the SSO [PR](https://github.com/dani-garcia/vaultwarden/pull/3899) since it would slow even more it's review.
+
+### Role mapping
+
+Allow to map roles from the Access token to users to grant access to `VaultWarden` `admin` console.
+Support two roles: `admin` or `user`.
+
+This feature is controlled by the following conf:
+
+- `SSO_ROLES_ENABLED`: control if the mapping is done, default is `false`
+- `SSO_ROLES_DEFAULT_TO_USER`: do not block login in case of missing or invalid roles, default is `true`.
+- `SSO_ROLES_TOKEN_PATH=/resource_access/${SSO_CLIENT_ID}/roles`: path to read roles in the Access token
+
 ### Experimental Version
 
-Made a version which allow to run the server without storing the master password (it's still required just not sent to the server).
+Made a version which additionnaly allow to run the server without storing the master password (it's still required just not sent to the server).
 It´s experimental, more information in [timshel/experimental](https://github.com/Timshel/vaultwarden/tree/experimental).
 
 ## Docker
