@@ -647,6 +647,10 @@ make_config! {
         sso_roles_default_to_user:      bool,   false,   def,    true;
         /// Id token path to read roles
         sso_roles_token_path:           String, false,  auto,   |c| format!("/resource_access/{}/roles", c.sso_client_id);
+        /// Invite users to Organizations
+        sso_organizations_invite:       bool,   false,   def,    false;
+        /// Id token path to read Organization/Groups
+        sso_organizations_token_path:   String, false,   def,    "/groups".to_string();
         /// Client cache for discovery endpoint. Duration in seconds (0 or less to disable).
         sso_client_cache_expiration:    u64,    true,   def,    0;
         /// Log all tokens
