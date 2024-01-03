@@ -17,7 +17,7 @@ use crate::{
 use macros::UuidFromParam;
 
 db_object! {
-    #[derive(Identifiable, Queryable, Insertable, AsChangeset, Selectable)]
+    #[derive(Clone, Identifiable, Queryable, Insertable, AsChangeset, Selectable)]
     #[diesel(table_name = users)]
     #[diesel(treat_none_as_null = true)]
     #[diesel(primary_key(uuid))]
