@@ -57,6 +57,7 @@ db_object! {
 }
 
 // https://github.com/bitwarden/server/blob/b86a04cef9f1e1b82cf18e49fc94e017c641130c/src/Core/Enums/OrganizationUserStatusType.cs
+#[derive(Copy, Clone)]
 pub enum MembershipStatus {
     Revoked = -1,
     Invited = 0,
@@ -239,8 +240,12 @@ impl Membership {
         }
     }
 
+    pub fn is_revoked(&self) -> bool {
+        self.status < MembershipStatus::Invited as i32
+    }
+
     pub fn restore(&mut self) -> bool {
-        if self.status < MembershipStatus::Invited as i32 {
+        if self.is_revoked() {
             self.status += ACTIVATE_REVOKE_DIFF;
             return true;
         }
@@ -248,7 +253,7 @@ impl Membership {
     }
 
     pub fn revoke(&mut self) -> bool {
-        if self.status > MembershipStatus::Revoked as i32 {
+        if !self.is_revoked() {
             self.status -= ACTIVATE_REVOKE_DIFF;
             return true;
         }
@@ -257,7 +262,7 @@ impl Membership {
 
     /// Return the status of the user in an unrevoked state
     pub fn get_unrevoked_status(&self) -> i32 {
-        if self.status <= MembershipStatus::Revoked as i32 {
+        if self.is_revoked() {
             return self.status + ACTIVATE_REVOKE_DIFF;
         }
         self.status
@@ -377,9 +382,52 @@ impl Organization {
         }}
     }
 
+    pub async fn find_by_uuids(uuids: &Vec<OrganizationId>, conn: &mut DbConn) -> Vec<Self> {
+        db_run! { conn: {
+            organizations::table
+                .filter(organizations::uuid.eq_any(uuids))
+                .load::<OrganizationDb>(conn)
+                .expect("Error loading organizations").from_db()
+        }}
+    }
+
+    pub async fn find_by_name(name: &str, conn: &mut DbConn) -> Option<Self> {
+        db_run! { conn: {
+            organizations::table
+                .filter(organizations::name.eq(name))
+                .first::<OrganizationDb>(conn)
+                .ok().from_db()
+        }}
+    }
+
+    pub async fn find_by_names(names: &Vec<String>, conn: &mut DbConn) -> Vec<Self> {
+        db_run! { conn: {
+            organizations::table
+                .filter(organizations::name.eq_any(names))
+                .load::<OrganizationDb>(conn)
+                .expect("Error loading organizations").from_db()
+        }}
+    }
+
     pub async fn get_all(conn: &mut DbConn) -> Vec<Self> {
         db_run! { conn: {
             organizations::table.load::<OrganizationDb>(conn).expect("Error loading organizations").from_db()
+        }}
+    }
+
+    pub async fn find_main_org_user_email(user_email: &str, conn: &mut DbConn) -> Option<Organization> {
+        let lower_mail = user_email.to_lowercase();
+
+        db_run! { conn: {
+            organizations::table
+                .inner_join(users_organizations::table.on(users_organizations::org_uuid.eq(organizations::uuid)))
+                .inner_join(users::table.on(users::uuid.eq(users_organizations::user_uuid)))
+                .filter(users::email.eq(lower_mail))
+                .filter(users_organizations::status.ne(MembershipStatus::Revoked as i32))
+                .order(users_organizations::atype.asc())
+                .select(organizations::all_columns)
+                .first::<OrganizationDb>(conn)
+                .ok().from_db()
         }}
     }
 }
@@ -1083,6 +1131,17 @@ impl Membership {
                 .and(users_organizations::org_uuid.eq(org_uuid))
             )
             .first::<MembershipDb>(conn).ok().from_db()
+        }}
+    }
+
+    pub async fn find_main_user_org(user_uuid: &str, conn: &mut DbConn) -> Option<Self> {
+        db_run! { conn: {
+            users_organizations::table
+                .filter(users_organizations::user_uuid.eq(user_uuid))
+                .filter(users_organizations::status.ne(MembershipStatus::Revoked as i32))
+                .order(users_organizations::atype.asc())
+                .first::<MembershipDb>(conn)
+                .ok().from_db()
         }}
     }
 }
