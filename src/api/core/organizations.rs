@@ -9,6 +9,7 @@ use crate::{
         EmptyResult, JsonResult, JsonUpcase, JsonUpcaseVec, JsonVec, Notify, PasswordOrOtpData, UpdateType,
     },
     auth::{decode_invite, AdminHeaders, Headers, ManagerHeaders, ManagerHeadersLoose, OwnerHeaders},
+    business::organization_logic,
     db::{models::*, DbConn},
     error::Error,
     mail,
@@ -307,12 +308,19 @@ async fn get_user_collections(headers: Headers, mut conn: DbConn) -> Json<Value>
 }
 
 // Called during the SSO enrollment
-// The `_identifier` should be the harcoded value returned by `get_org_domain_sso_details`
-// The returned `Id` will then be passed to `get_policy_master_password` which will mainly ignore it
-#[get("/organizations/<_identifier>/auto-enroll-status")]
-fn get_auto_enroll_status(_identifier: &str) -> JsonResult {
+// We return the org_id if it exists ortherwise we return the first associated with the user
+#[get("/organizations/<identifier>/auto-enroll-status")]
+async fn get_auto_enroll_status(identifier: &str, headers: Headers, mut conn: DbConn) -> JsonResult {
+    let org_id = match Organization::find_by_name(identifier, &mut conn).await.map(|o| o.uuid) {
+        Some(org_id) => org_id,
+        None => UserOrganization::find_main_user_org(&headers.user.uuid, &mut conn)
+            .await
+            .map(|uo| uo.org_uuid)
+            .unwrap_or_else(|| "null".to_string()),
+    };
+
     Ok(Json(json!({
-        "Id": "_",
+        "Id": org_id,
         "ResetPasswordEnabled": false, // Not implemented
     })))
 }
@@ -790,13 +798,25 @@ async fn _get_org_details(org_id: &str, host: &str, user_uuid: &str, conn: &mut 
     json!(ciphers_json)
 }
 
-// Endpoint called when the user select SSO login (body: `{ "email": "" }`).
+#[derive(Deserialize)]
+#[allow(non_snake_case)]
+struct OrgDomainDetails {
+    Email: String,
+}
+
 // Returning a Domain/Organization here allow to prefill it and prevent prompting the user
-// VaultWarden sso login is not linked to Org so we set a dummy value.
-#[post("/organizations/domain/sso/details")]
-fn get_org_domain_sso_details() -> JsonResult {
+// So we either return an Org name associated to the user or a dummy value.
+#[post("/organizations/domain/sso/details", data = "<data>")]
+async fn get_org_domain_sso_details(data: JsonUpcase<OrgDomainDetails>, mut conn: DbConn) -> JsonResult {
+    let data: OrgDomainDetails = data.into_inner().data;
+
+    let identifier = match Organization::find_main_org_user_email(&data.Email, &mut conn).await {
+        Some(org) => org.name,
+        None => crate::sso::FAKE_IDENTIFIER.to_string(),
+    };
+
     Ok(Json(json!({
-        "organizationIdentifier": "vaultwarden",
+        "organizationIdentifier": identifier,
         "ssoAvailable": CONFIG.sso_enabled()
     })))
 }
@@ -868,10 +888,10 @@ async fn post_org_keys(
 
 #[derive(Deserialize)]
 #[allow(non_snake_case)]
-struct CollectionData {
-    Id: String,
-    ReadOnly: bool,
-    HidePasswords: bool,
+pub struct CollectionData {
+    pub Id: String,
+    pub ReadOnly: bool,
+    pub HidePasswords: bool,
 }
 
 #[derive(Deserialize)]
@@ -894,7 +914,7 @@ async fn send_invite(
     let data: InviteData = data.into_inner().data;
 
     let new_type = match UserOrgType::from_str(&data.Type.into_string()) {
-        Some(new_type) => new_type as i32,
+        Some(new_type) => new_type,
         None => err!("Invalid type"),
     };
 
@@ -902,9 +922,15 @@ async fn send_invite(
         err!("Only Owners can invite Managers, Admins or Owners")
     }
 
+    let org = match Organization::find_by_uuid(org_id, &mut conn).await {
+        Some(org) => org,
+        None => err!("Error looking up organization"),
+    };
+
+    let collections = data.Collections.into_iter().flatten().collect();
+
     for email in data.Emails.iter() {
         let email = email.to_lowercase();
-        let mut user_org_status = UserOrgStatus::Invited as i32;
         let user = match User::find_by_mail(&email, &mut conn).await {
             None => {
                 if !CONFIG.invitations_allowed() {
@@ -927,70 +953,24 @@ async fn send_invite(
             Some(user) => {
                 if UserOrganization::find_by_user_and_org(&user.uuid, org_id, &mut conn).await.is_some() {
                     err!(format!("User already in organization: {email}"))
-                } else {
-                    // automatically accept existing users if mail is disabled
-                    if !CONFIG.mail_enabled() && !user.password_hash.is_empty() {
-                        user_org_status = UserOrgStatus::Accepted as i32;
-                    }
-                    user
                 }
+                user
             }
         };
 
-        let mut new_user =
-            UserOrganization::new(user.uuid.clone(), String::from(org_id), Some(headers.user.email.clone()));
-        let access_all = data.AccessAll.unwrap_or(false);
-        new_user.access_all = access_all;
-        new_user.atype = new_type;
-        new_user.status = user_org_status;
-
-        // If no accessAll, add the collections received
-        if !access_all {
-            for col in data.Collections.iter().flatten() {
-                match Collection::find_by_uuid_and_org(&col.Id, org_id, &mut conn).await {
-                    None => err!("Collection not found in Organization"),
-                    Some(collection) => {
-                        CollectionUser::save(&user.uuid, &collection.uuid, col.ReadOnly, col.HidePasswords, &mut conn)
-                            .await?;
-                    }
-                }
-            }
-        }
-
-        new_user.save(&mut conn).await?;
-
-        for group in data.Groups.iter() {
-            let mut group_entry = GroupUser::new(String::from(group), user.uuid.clone());
-            group_entry.save(&mut conn).await?;
-        }
-
-        log_event(
-            EventType::OrganizationUserInvited as i32,
-            &new_user.uuid,
-            org_id,
-            &headers.user.uuid,
-            headers.device.atype,
-            &headers.ip.ip,
+        organization_logic::invite(
+            &user,
+            &headers.device,
+            &headers.ip,
+            &org,
+            new_type,
+            &data.Groups,
+            data.AccessAll.unwrap_or(false),
+            &collections,
+            headers.user.email.clone(),
             &mut conn,
         )
-        .await;
-
-        if CONFIG.mail_enabled() {
-            let org_name = match Organization::find_by_uuid(org_id, &mut conn).await {
-                Some(org) => org.name,
-                None => err!("Error looking up organization"),
-            };
-
-            mail::send_invite(
-                &email,
-                &user.uuid,
-                Some(String::from(org_id)),
-                Some(new_user.uuid),
-                &org_name,
-                Some(headers.user.email.clone()),
-            )
-            .await?;
-        }
+        .await?;
     }
 
     Ok(())
@@ -1706,20 +1686,24 @@ async fn list_policies_invited_user(org_id: &str, userId: &str, mut conn: DbConn
 }
 
 // Called during the SSO enrollment.
+// Return the org policy if it exists, otherwise use the default one.
 #[get("/organizations/<org_id>/policies/master-password", rank = 1)]
-fn get_policy_master_password(org_id: &str, _headers: Headers) -> JsonResult {
-    let data = match CONFIG.sso_master_password_policy() {
-        Some(policy) => policy,
-        None => "null".to_string(),
-    };
+async fn get_policy_master_password(org_id: &str, _headers: Headers, mut conn: DbConn) -> JsonResult {
+    let policy =
+        OrgPolicy::find_by_org_and_type(org_id, OrgPolicyType::MasterPassword, &mut conn).await.unwrap_or_else(|| {
+            let data = match CONFIG.sso_master_password_policy() {
+                Some(policy) => policy,
+                None => "null".to_string(),
+            };
 
-    let policy = OrgPolicy {
-        uuid: String::from(org_id),
-        org_uuid: String::from(org_id),
-        atype: OrgPolicyType::MasterPassword as i32,
-        enabled: CONFIG.sso_master_password_policy().is_some(),
-        data,
-    };
+            OrgPolicy {
+                uuid: String::from(org_id),
+                org_uuid: String::from(org_id),
+                atype: OrgPolicyType::MasterPassword as i32,
+                enabled: CONFIG.sso_master_password_policy().is_some(),
+                data,
+            }
+        });
 
     Ok(Json(policy.to_json()))
 }
