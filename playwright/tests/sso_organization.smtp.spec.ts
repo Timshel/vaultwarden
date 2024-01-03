@@ -140,3 +140,44 @@ test('invited with existing account', async ({ page }) => {
         await expect(mail1Buffer.next((m) => m.subject === "Invitation to Test accepted")).resolves.toBeDefined();
     });
 });
+
+test('Org invite auto accept', async ({ page }, testInfo: TestInfo) => {
+    test.setTimeout(40000);
+
+    await utils.restartVaultwarden(page, testInfo, {
+        ORGANIZATION_INVITE_AUTO_ACCEPT: true,
+        SMTP_HOST: process.env.MAILDEV_HOST,
+        SMTP_FROM: process.env.VAULTWARDEN_SMTP_FROM,
+        SSO_ENABLED: true,
+        SSO_FRONTEND: "override",
+    }, true);
+
+    await logNewUser(test, page, users.user1, { mailBuffer: mail1Buffer, override: true });
+
+    await test.step('Create Org', async () => {
+        await page.getByRole('link', { name: 'New organisation' }).click();
+        await page.getByLabel('Organisation name (required)').fill('Test');
+        await page.getByRole('button', { name: 'Submit' }).click();
+        await page.locator('div').filter({ hasText: 'Members' }).nth(2).click();
+    });
+
+    await test.step('Invite user2', async () => {
+        await page.getByRole('button', { name: 'Invite member' }).click();
+        await page.getByLabel('Email (required)').fill(users.user2.email);
+        await page.getByRole('tab', { name: 'Collections' }).click();
+        await page.getByLabel('Permission').selectOption('edit');
+        await page.getByLabel('Select collections').click();
+        await page.getByLabel('Options list').getByText('Default collection').click();
+        await page.getByRole('button', { name: 'Save' }).click();
+        await expect(page.getByTestId("toast-message")).toHaveText('User(s) invited');
+        await page.locator('#toast-container').getByRole('button').click();
+    });
+
+    await expect(page.getByRole('row', { name: users.user2.email })).toHaveText(/Needs confirmation/);
+    await page.getByRole('row', { name: users.user2.email }).getByLabel('Options').click();
+    await page.getByRole('menuitem', { name: 'Confirm' }).click();
+
+    await expect(page.getByTestId("toast-title")).toHaveText('Failed to confirm user');
+
+    await  expect(mail2Buffer.next((m) => m.subject === "Enrolled in Test")).resolves.toBeDefined();
+});

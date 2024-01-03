@@ -315,6 +315,7 @@ async fn post_set_password(data: Json<SetPasswordData>, headers: Headers, mut co
     if CONFIG.mail_enabled() {
         mail::send_welcome(&user.email.to_lowercase()).await?;
     } else {
+        // Since the user now has a password we can confirm invitations.
         Membership::accept_user_invitations(&user.uuid, &mut conn).await?;
     }
 

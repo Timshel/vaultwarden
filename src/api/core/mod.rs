@@ -3,7 +3,7 @@ mod ciphers;
 mod emergency_access;
 mod events;
 mod folders;
-mod organizations;
+pub mod organizations;
 mod public;
 mod sends;
 pub mod two_factor;
@@ -254,7 +254,11 @@ async fn accept_org_invite(
     reset_password_key: Option<String>,
     conn: &mut DbConn,
 ) -> EmptyResult {
-    if member.status != MembershipStatus::Invited as i32 {
+    if !(member.status == MembershipStatus::Invited as i32
+        || (member.status == MembershipStatus::Accepted as i32
+            && crate::CONFIG.sso_enabled()
+            && crate::CONFIG.organization_invite_auto_accept()))
+    {
         err!("User already accepted the invitation");
     }
 
