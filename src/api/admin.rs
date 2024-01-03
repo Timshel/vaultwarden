@@ -18,7 +18,7 @@ use crate::{
         core::{log_event, two_factor},
         unregister_push_device, ApiResult, EmptyResult, JsonResult, Notify,
     },
-    auth::{decode_admin, encode_jwt, generate_admin_claims, ClientIp, Secure},
+    auth::{decode_admin, encode_jwt, generate_admin_claims, ClientIp},
     config::ConfigBuilder,
     db::{backup_database, get_sql_server_version, models::*, DbConn, DbConnType},
     error::{Error, MapResult},
@@ -31,8 +31,12 @@ use crate::{
     CONFIG, VERSION,
 };
 
+#[allow(clippy::nonminimal_bool)]
 pub fn routes() -> Vec<Route> {
-    if !CONFIG.disable_admin_token() && !CONFIG.is_admin_token_set() {
+    if !CONFIG.disable_admin_token()
+        && !CONFIG.is_admin_token_set()
+        && !(CONFIG.sso_enabled() && CONFIG.sso_roles_enabled())
+    {
         return routes![admin_disabled];
     }
 
@@ -92,7 +96,7 @@ fn admin_disabled() -> &'static str {
     "The admin panel is disabled, please configure the 'ADMIN_TOKEN' variable to enable it"
 }
 
-const COOKIE_NAME: &str = "VW_ADMIN";
+pub const COOKIE_NAME: &str = "VW_ADMIN";
 const ADMIN_PATH: &str = "/admin";
 const DT_FMT: &str = "%Y-%m-%d %H:%M:%S %Z";
 
@@ -100,7 +104,7 @@ const BASE_TEMPLATE: &str = "admin/base";
 
 const ACTING_ADMIN_USER: &str = "vaultwarden-admin-00000-000000000000";
 
-fn admin_path() -> String {
+pub fn admin_path() -> String {
     format!("{}{}", CONFIG.domain_path(), ADMIN_PATH)
 }
 
@@ -155,6 +159,7 @@ fn render_admin_login(msg: Option<&str>, redirect: Option<String>) -> ApiResult<
     let json = json!({
         "page_content": "admin/login",
         "error": msg,
+        "sso_only": CONFIG.sso_enabled() && CONFIG.sso_roles_enabled(),
         "redirect": redirect,
         "urlpath": CONFIG.domain_path()
     });
@@ -170,13 +175,21 @@ struct LoginForm {
     redirect: Option<String>,
 }
 
+pub fn create_admin_cookie<'a>() -> Cookie<'a> {
+    let claims = generate_admin_claims();
+    let jwt = encode_jwt(&claims);
+
+    Cookie::build((COOKIE_NAME, jwt))
+        .path(admin_path())
+        .max_age(time::Duration::minutes(CONFIG.admin_session_lifetime()))
+        .same_site(SameSite::Strict)
+        .http_only(true)
+        .secure(CONFIG.is_https())
+        .into()
+}
+
 #[post("/", data = "<data>")]
-fn post_admin_login(
-    data: Form<LoginForm>,
-    cookies: &CookieJar<'_>,
-    ip: ClientIp,
-    secure: Secure,
-) -> Result<Redirect, AdminResponse> {
+fn post_admin_login(data: Form<LoginForm>, cookies: &CookieJar<'_>, ip: ClientIp) -> Result<Redirect, AdminResponse> {
     let data = data.into_inner();
     let redirect = data.redirect;
 
@@ -193,17 +206,7 @@ fn post_admin_login(
         Err(AdminResponse::Unauthorized(render_admin_login(Some("Invalid admin token, please try again."), redirect)))
     } else {
         // If the token received is valid, generate JWT and save it as a cookie
-        let claims = generate_admin_claims();
-        let jwt = encode_jwt(&claims);
-
-        let cookie = Cookie::build((COOKIE_NAME, jwt))
-            .path(admin_path())
-            .max_age(time::Duration::minutes(CONFIG.admin_session_lifetime()))
-            .same_site(SameSite::Strict)
-            .http_only(true)
-            .secure(secure.https);
-
-        cookies.add(cookie);
+        cookies.add(create_admin_cookie());
         if let Some(redirect) = redirect {
             Ok(Redirect::to(format!("{}{}", admin_path(), redirect)))
         } else {
@@ -259,6 +262,7 @@ fn render_admin_page() -> ApiResult<Html<String>> {
     let settings_json = json!({
         "config": CONFIG.prepare_json(),
         "can_backup": *CAN_BACKUP,
+        "sso_only": CONFIG.sso_enabled() && CONFIG.sso_roles_enabled(),
     });
     let text = AdminTemplateData::new("admin/settings", settings_json).render()?;
     Ok(Html(text))
