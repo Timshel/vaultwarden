@@ -648,6 +648,12 @@ make_config! {
         sso_master_password_policy:     String, true,  option;
         /// Use sso only for auth not the session lifecycle
         sso_auth_only_not_session:      bool,   true,   def,    false;
+        /// Enable the mapping of roles (user/admin) from the access_token
+        sso_roles_enabled:              bool,   false,   def,    false;
+        /// Missing invalid roles default to user
+        sso_roles_default_to_user:      bool,   false,   def,    true;
+        /// Id token path to read roles
+        sso_roles_token_path:           String, false,  auto,   |c| format!("/resource_access/{}/roles", c.sso_client_id);
         /// Client cache for discovery endpoint. Duration in seconds (0 or less to disable).
         sso_client_cache_expiration:    u64,    true,   def,    0;
         /// Log all tokens, `LOG_LEVEL=debug` or `LOG_LEVEL_OVERRIDE=vaultwarden::sso=debug` is required
@@ -1325,6 +1331,11 @@ impl Config {
         let token = self.admin_token();
 
         token.is_some() && !token.unwrap().trim().is_empty()
+    }
+
+    /// Tests whether the domain contain HTTPS.
+    pub fn is_https(&self) -> bool {
+        self.domain().starts_with("https")
     }
 
     pub fn render_template<T: serde::ser::Serialize>(
