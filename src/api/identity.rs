@@ -845,33 +845,19 @@ fn prevalidate() -> JsonResult {
 
 #[get("/connect/oidc-signin?<code>&<state>", rank = 1)]
 fn oidcsignin(code: String, state: String, jar: &CookieJar<'_>) -> ApiResult<CustomRedirect> {
-    let redirect_uri = jar
-        .get(&sso::COOKIE_NAME_REDIRECT.to_string())
-        .map(|c| c.value().to_string())
-        .unwrap_or(format!("{}/sso-connector.html", CONFIG.domain()));
-
-    let redirect = CustomRedirect {
-        url: format!("{}?code={code}&state={state}", redirect_uri),
-        headers: vec![],
-    };
-
-    Ok(redirect)
+    Ok(sso::format_bitwarden_redirect(&code, &state, jar))
 }
 
-// No good way to display the error
-// Bitwarden client appear to only care for code and state
-// cf: https://github.com/bitwarden/clients/blob/8e46ef1ae5be8b62b0d3d0b9d1b1c62088a04638/libs/angular/src/auth/components/sso.component.ts#L68C11-L68C23)
-#[get("/connect/oidc-signin?<error>&<error_description>", rank = 2)]
-fn oidcsignin_error(error: String, error_description: Option<String>) -> ApiResult<CustomRedirect> {
-    if CONFIG.sso_auth_failure_silent() {
-        warn!("SSO login failed with {error} and {:?}", error_description);
-        Ok(CustomRedirect {
-            url: format!("/#?error={error}"),
-            headers: vec![],
-        })
-    } else {
-        err!(format!("SSO login failed with {error} and {:?}", error_description));
-    }
+// To display the error we wrap it as JWT token
+#[get("/connect/oidc-signin?<error>&<error_description>&<state>", rank = 2)]
+fn oidcsignin_error(
+    error: String,
+    error_description: Option<String>,
+    state: String,
+    jar: &CookieJar<'_>,
+) -> ApiResult<CustomRedirect> {
+    let as_token = sso::wrap_sso_errors(error, error_description);
+    Ok(sso::format_bitwarden_redirect(&as_token, &state, jar))
 }
 
 #[derive(Debug, Clone, Default, FromForm)]

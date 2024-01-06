@@ -19,7 +19,6 @@ The following configurations are available
  	- $SSO_AUTHORITY/.well-known/openid-configuration should return the a json document: https://openid.net/specs/openid-connect-discovery-1_0.html#ProviderConfigurationResponse
  - `SSO_CLIENT_ID` : Client Id
  - `SSO_CLIENT_SECRET` : Client Secret
- - `SSO_AUTH_FAILURE_SILENT`: Silently redirect to the home instead of displaying a JSON error.
  - `SSO_KEY_FILEPATH` : Optional public key to validate the JWT token (without it signature check will not be done).
  - `SSO_MASTER_PASSWORD_POLICY`: Optional Master password policy
  - `SSO_ROLES_ENABLED`: control if the mapping is done, default is `false`

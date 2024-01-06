@@ -20,6 +20,7 @@ static JWT_INVITE_ISSUER: Lazy<String> = Lazy::new(|| format!("{}|invite", CONFI
 static JWT_EMERGENCY_ACCESS_INVITE_ISSUER: Lazy<String> =
     Lazy::new(|| format!("{}|emergencyaccessinvite", CONFIG.domain_origin()));
 static JWT_SSOTOKEN_ISSUER: Lazy<String> = Lazy::new(|| format!("{}|ssotoken", CONFIG.domain_origin()));
+static JWT_SSO_ERROR_ISSUER: Lazy<String> = Lazy::new(|| format!("{}|ssoerror", CONFIG.domain_origin()));
 static JWT_DELETE_ISSUER: Lazy<String> = Lazy::new(|| format!("{}|delete", CONFIG.domain_origin()));
 static JWT_VERIFYEMAIL_ISSUER: Lazy<String> = Lazy::new(|| format!("{}|verifyemail", CONFIG.domain_origin()));
 static JWT_ADMIN_ISSUER: Lazy<String> = Lazy::new(|| format!("{}|admin", CONFIG.domain_origin()));
@@ -102,6 +103,10 @@ pub fn decode_api_org(token: &str) -> Result<OrgApiKeyLoginJwtClaims, Error> {
 
 pub fn decode_file_download(token: &str) -> Result<FileDownloadClaims, Error> {
     decode_jwt(token, JWT_FILE_DOWNLOAD_ISSUER.to_string())
+}
+
+pub fn decode_sso_error(token: &str) -> Result<SSOCodeErrorClaims, Error> {
+    decode_jwt(token, JWT_SSO_ERROR_ISSUER.to_string())
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -345,6 +350,28 @@ pub fn generate_send_claims(send_id: &str, file_id: &str) -> BasicJwtClaims {
         iss: JWT_SEND_ISSUER.to_string(),
         sub: format!("{send_id}/{file_id}"),
     }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SSOCodeErrorClaims {
+    // Expiration time
+    pub exp: i64,
+    // Issuer
+    pub iss: String,
+
+    pub error: String,
+    pub error_description: Option<String>,
+}
+
+pub fn generate_sso_error_claims(error: String, error_description: Option<String>) -> String {
+    let code_error = SSOCodeErrorClaims {
+        exp: (Utc::now().naive_utc() + Duration::minutes(2)).timestamp(),
+        iss: JWT_SSO_ERROR_ISSUER.to_string(),
+        error,
+        error_description,
+    };
+
+    encode_jwt(&code_error)
 }
 
 //

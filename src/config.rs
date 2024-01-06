@@ -619,8 +619,6 @@ make_config! {
         sso_client_id:                  String, true,   def,    String::new();
         /// Client Key
         sso_client_secret:              Pass,   true,   def,    String::new();
-        /// Silent redirect
-        sso_auth_failure_silent:        bool,   true,   def,    false;
         /// Authority Server
         sso_authority:                  String, true,   def,    String::new();
         /// CallBack Path
