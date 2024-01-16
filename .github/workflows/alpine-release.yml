@@ -1,0 +1,98 @@
+name: Alpine Release
+
+on:
+  workflow_dispatch:
+
+jobs:
+  docker-build:
+    runs-on: ubuntu-22.04
+    environment: main
+    timeout-minutes: 120
+    env:
+      SOURCE_COMMIT: ${{ github.sha }}
+      SOURCE_REPOSITORY_URL: "https://github.com/${{ github.repository }}"
+      # The *_REPO variables need to be configured as repository variables
+      # Append `/settings/variables/actions` to your repo url
+      # DOCKERHUB_REPO needs to be 'index.docker.io/<user>/<repo>'
+      # Check for Docker hub credentials in secrets
+      HAVE_DOCKERHUB_LOGIN: ${{ vars.DOCKERHUB_REPO != '' && secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
+    strategy:
+      matrix:
+        base_image: ["alpine-amd64", "alpine-arm64"]
+
+    steps:
+      # Checkout the repo
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+        with:
+          fetch-depth: 0
+
+      - name: Initialize QEMU binfmt support
+        uses: docker/setup-qemu-action@68827325e0b33c7199eb31dd4e31fbe9023e06e3 # v3.0.0
+        with:
+          platforms: "arm64,arm"
+
+      # Start Docker Buildx
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@f95db51fddba0c2d1ec667646a06c2ce06100226 # v3.0.0
+        # https://github.com/moby/buildkit/issues/3969
+        # Also set max parallelism to 2, the default of 4 breaks GitHub Actions
+        with:
+          config-inline: |
+            [worker.oci]
+              max-parallelism = 2
+          driver-opts: |
+            network=host
+
+      # Determine Base Tags and Source Version
+      - name: Determine Base Tags and Source Version
+        shell: bash
+        run: |
+          # Get the Source Version for this release
+          GIT_EXACT_TAG="$(git describe --tags --abbrev=0 --exact-match 2>/dev/null || true)"
+          if [[ -n "${GIT_EXACT_TAG}" ]]; then
+              SOURCE_VERSION="${GIT_EXACT_TAG}"
+          else
+              GIT_LAST_TAG="$(git describe --tags --abbrev=0)"
+              SOURCE_VERSION="${GIT_LAST_TAG}-${SOURCE_COMMIT:0:8}"
+          fi
+          echo "SOURCE_VERSION=${SOURCE_VERSION}" | tee -a "${GITHUB_ENV}"
+
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            echo "BASE_TAGS=latest,${GITHUB_REF#refs/*/}" | tee -a "${GITHUB_ENV}"
+          elif [[ "${{ github.ref_type }}" == "branch" ]]; then
+            echo "BASE_TAGS=$SOURCE_VERSION" | tee -a "${GITHUB_ENV}"
+          fi
+      # End Determine Base Tags
+
+      # Login to Docker Hub
+      - name: Login to Docker Hub
+        uses: docker/login-action@343f7c4344506bcbf9b4de18042ae17996df046d # v3.0.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+        if: ${{ env.HAVE_DOCKERHUB_LOGIN == 'true' }}
+
+      - name: Add registry for DockerHub
+        if: ${{ env.HAVE_DOCKERHUB_LOGIN == 'true' }}
+        shell: bash
+        run: |
+          echo "CONTAINER_REGISTRIES=${{ vars.DOCKERHUB_REPO }}" | tee -a "${GITHUB_ENV}"
+
+      - name: Bake ${{ matrix.base_image }} containers
+        uses: docker/bake-action@849707117b03d39aba7924c50a10376a69e88d7d # v4.1.0
+        env:
+          BASE_TAGS: "${{ env.BASE_TAGS }}"
+          SOURCE_COMMIT: "${{ env.SOURCE_COMMIT }}"
+          SOURCE_VERSION: "${{ env.SOURCE_VERSION }}"
+          SOURCE_REPOSITORY_URL: "${{ env.SOURCE_REPOSITORY_URL }}"
+          CONTAINER_REGISTRIES: "${{ env.CONTAINER_REGISTRIES }}"
+        with:
+          pull: true
+          files: docker/docker-bake.hcl
+          targets: "${{ matrix.base_image }}"
+
+      - name: Push docker images
+        run: docker image push --all-tags ${{ env.CONTAINER_REGISTRIES }}
+
+
