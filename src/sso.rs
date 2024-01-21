@@ -9,14 +9,14 @@ use once_cell::sync::Lazy;
 use openidconnect::core::{CoreClient, CoreProviderMetadata, CoreResponseType, CoreUserInfoClaims};
 use openidconnect::reqwest::async_http_client;
 use openidconnect::{
-    AuthenticationFlow, AuthorizationCode, ClientId, ClientSecret, CsrfToken, IdToken, Nonce, OAuth2TokenResponse,
-    RefreshToken, Scope,
+    AccessToken, AuthenticationFlow, AuthorizationCode, ClientId, ClientSecret, CsrfToken, IdToken, Nonce,
+    OAuth2TokenResponse, RefreshToken, Scope,
 };
 
 use crate::{
     api::ApiResult,
     auth,
-    auth::{AuthMethodScope, DEFAULT_REFRESH_VALIDITY},
+    auth::{AuthMethodScope, TokenWrapper, DEFAULT_REFRESH_VALIDITY},
     db::{
         models::{Device, SsoNonce, User},
         DbConn,
@@ -33,37 +33,61 @@ static CLIENT_CACHE: RwLock<Option<CoreClient>> = RwLock::new(None);
 
 static SSO_JWT_VALIDATION: Lazy<Decoding> = Lazy::new(prepare_decoding);
 
+static DEFAULT_BW_EXPIRATION: Lazy<chrono::Duration> = Lazy::new(|| chrono::Duration::minutes(5));
+
 // Will Panic if SSO is activated and a key file is present but we can't decode its content
 pub fn pre_load_sso_jwt_validation() {
     Lazy::force(&SSO_JWT_VALIDATION);
 }
 
-// Call the OpenId discovery endpoint to retrieve configuration
-async fn get_client() -> ApiResult<CoreClient> {
-    let client_id = ClientId::new(CONFIG.sso_client_id());
-    let client_secret = ClientSecret::new(CONFIG.sso_client_secret());
-
-    let issuer_url = CONFIG.sso_issuer_url()?;
-
-    let provider_metadata = match CoreProviderMetadata::discover_async(issuer_url, async_http_client).await {
-        Err(err) => err!(format!("Failed to discover OpenID provider: {err}")),
-        Ok(metadata) => metadata,
-    };
-
-    Ok(CoreClient::from_provider_metadata(provider_metadata, client_id, Some(client_secret))
-        .set_redirect_uri(CONFIG.sso_redirect_url()?))
+#[rocket::async_trait]
+trait CoreClientExt {
+    async fn _get_client() -> ApiResult<CoreClient>;
+    async fn cached() -> ApiResult<CoreClient>;
+    async fn user_info_async(&self, access_token: AccessToken) -> ApiResult<CoreUserInfoClaims>;
 }
 
-// Simple cache to prevent recalling the discovery endpoint each time
-async fn cached_client() -> ApiResult<CoreClient> {
-    let cc_client = CLIENT_CACHE.read().ok().and_then(|rw_lock| rw_lock.clone());
-    match cc_client {
-        Some(client) => Ok(client),
-        None => get_client().await.map(|client| {
-            let mut cached_client = CLIENT_CACHE.write().unwrap();
-            *cached_client = Some(client.clone());
-            client
-        }),
+#[rocket::async_trait]
+impl CoreClientExt for CoreClient {
+    // Call the OpenId discovery endpoint to retrieve configuration
+    async fn _get_client() -> ApiResult<CoreClient> {
+        let client_id = ClientId::new(CONFIG.sso_client_id());
+        let client_secret = ClientSecret::new(CONFIG.sso_client_secret());
+
+        let issuer_url = CONFIG.sso_issuer_url()?;
+
+        let provider_metadata = match CoreProviderMetadata::discover_async(issuer_url, async_http_client).await {
+            Err(err) => err!(format!("Failed to discover OpenID provider: {err}")),
+            Ok(metadata) => metadata,
+        };
+
+        Ok(CoreClient::from_provider_metadata(provider_metadata, client_id, Some(client_secret))
+            .set_redirect_uri(CONFIG.sso_redirect_url()?))
+    }
+
+    // Simple cache to prevent recalling the discovery endpoint each time
+    async fn cached() -> ApiResult<CoreClient> {
+        let cc_client = CLIENT_CACHE.read().ok().and_then(|rw_lock| rw_lock.clone());
+        match cc_client {
+            Some(client) => Ok(client),
+            None => Self::_get_client().await.map(|client| {
+                let mut cached_client = CLIENT_CACHE.write().unwrap();
+                *cached_client = Some(client.clone());
+                client
+            }),
+        }
+    }
+
+    async fn user_info_async(&self, access_token: AccessToken) -> ApiResult<CoreUserInfoClaims> {
+        let endpoint = match self.user_info(access_token, None) {
+            Err(err) => err!(format!("No user_info endpoint: {err}")),
+            Ok(endpoint) => endpoint,
+        };
+
+        match endpoint.request_async(async_http_client).await {
+            Err(err) => err!(format!("Request to user_info endpoint failed: {err}")),
+            Ok(user_info) => Ok(user_info),
+        }
     }
 }
 
@@ -71,7 +95,7 @@ async fn cached_client() -> ApiResult<CoreClient> {
 pub async fn authorize_url(mut conn: DbConn, state: String) -> ApiResult<Url> {
     let scopes = CONFIG.sso_scopes_vec().into_iter().map(Scope::new);
 
-    let (auth_url, _csrf_state, nonce) = cached_client()
+    let (auth_url, _csrf_state, nonce) = CoreClient::cached()
         .await?
         .authorize_url(
             AuthenticationFlow::<CoreResponseType>::AuthorizationCode,
@@ -243,19 +267,11 @@ pub async fn exchange_code(code: &String) -> ApiResult<UserInformation> {
     }
 
     let oidc_code = AuthorizationCode::new(code.clone());
-    let client = cached_client().await?;
+    let client = CoreClient::cached().await?;
 
     match client.exchange_code(oidc_code).request_async(async_http_client).await {
         Ok(token_response) => {
-            let endpoint = match client.user_info(token_response.access_token().to_owned(), None) {
-                Err(err) => err!(format!("No user_info endpoint: {err}")),
-                Ok(endpoint) => endpoint,
-            };
-
-            let user_info: CoreUserInfoClaims = match endpoint.request_async(async_http_client).await {
-                Err(err) => err!(format!("Request to user_info endpoint failed: {err}")),
-                Ok(user_info) => user_info,
-            };
+            let user_info = client.user_info_async(token_response.access_token().to_owned()).await?;
 
             let id_token = SSO_JWT_VALIDATION.decode_id_token(token_response.extra_fields().id_token())?;
 
@@ -311,36 +327,44 @@ pub async fn redeem(code: &String, conn: &mut DbConn) -> ApiResult<Authenticated
     }
 }
 
+// We always return a refresh_token (with no refresh_token some secrets are not displayed in the web front).
+// If there is no SSO refresh_token, we keep the access_token to be able to call user_info to check for validity
 pub fn create_auth_tokens(
     device: &Device,
     user: &User,
     refresh_token: Option<String>,
     access_token: &str,
 ) -> ApiResult<auth::AuthTokens> {
-    let refresh_claims = refresh_token.map(|rt| {
-        let (nbf, exp) = match SSO_JWT_VALIDATION.decode_basic_token("refresh_token", &rt) {
+    let access_payload = SSO_JWT_VALIDATION.decode_basic_token("access_token", access_token)?;
+    debug!("Access_payload: {:?}", access_payload);
+
+    let (nbf, exp, token) = if let Some(rt) = refresh_token.as_ref() {
+        let (nbf, exp) = match SSO_JWT_VALIDATION.decode_basic_token("refresh_token", rt) {
             Err(_) => {
                 let time_now = Utc::now().naive_utc();
-                (time_now.timestamp(), (time_now + *DEFAULT_REFRESH_VALIDITY).timestamp())
+                let exp = (time_now + *DEFAULT_REFRESH_VALIDITY).timestamp();
+                debug!("Non jwt refresh_token (expiration set to {})", exp);
+                (time_now.timestamp(), exp)
             }
             Ok(refresh_payload) => {
                 debug!("Refresh_payload: {:?}", refresh_payload);
                 (refresh_payload.nbf(), refresh_payload.exp)
             }
         };
+        (nbf, exp, TokenWrapper::Refresh(rt.to_string()))
+    } else {
+        debug!("No refresh_token present");
+        (access_payload.nbf(), access_payload.exp, TokenWrapper::Access(access_token.to_string()))
+    };
 
-        auth::RefreshJwtClaims {
-            nbf,
-            exp,
-            iss: auth::JWT_LOGIN_ISSUER.to_string(),
-            sub: auth::AuthMethod::Sso,
-            device_token: device.refresh_token.clone(),
-            refresh_token: Some(rt),
-        }
-    });
-
-    let access_payload = SSO_JWT_VALIDATION.decode_basic_token("access_token", access_token)?;
-    debug!("Access_payload: {:?}", access_payload);
+    let refresh_claims = auth::RefreshJwtClaims {
+        nbf,
+        exp,
+        iss: auth::JWT_LOGIN_ISSUER.to_string(),
+        sub: auth::AuthMethod::Sso,
+        device_token: device.refresh_token.clone(),
+        token: Some(token),
+    };
 
     let access_claims = auth::LoginJwtClaims::new(
         device,
@@ -356,27 +380,53 @@ pub fn create_auth_tokens(
     })
 }
 
+// This endpoint is called in two case
+//  - the session is close to expiration we will try to extend it
+//  - the user is going to make an action and we check that the session is still valid
 pub async fn exchange_refresh_token(
     device: &Device,
     user: &User,
     refresh_claims: &auth::RefreshJwtClaims,
 ) -> ApiResult<auth::AuthTokens> {
-    if let Some(refresh_token) = &refresh_claims.refresh_token {
-        let rt = RefreshToken::new(refresh_token.to_string());
+    match &refresh_claims.token {
+        Some(TokenWrapper::Refresh(refresh_token)) => {
+            let rt = RefreshToken::new(refresh_token.to_string());
 
-        let client = cached_client().await?;
+            let client = CoreClient::cached().await?;
 
-        let token_response = match client.exchange_refresh_token(&rt).request_async(async_http_client).await {
-            Err(err) => err!(format!("Request to exchange_refresh_token endpoint failed: {:?}", err)),
-            Ok(token_response) => token_response,
-        };
+            let token_response = match client.exchange_refresh_token(&rt).request_async(async_http_client).await {
+                Err(err) => err!(format!("Request to exchange_refresh_token endpoint failed: {:?}", err)),
+                Ok(token_response) => token_response,
+            };
 
-        // Use new refresh_token if returned
-        let rolled_refresh_token =
-            token_response.refresh_token().map(|token| token.secret().to_string()).unwrap_or(refresh_token.to_string());
+            // Use new refresh_token if returned
+            let rolled_refresh_token = token_response
+                .refresh_token()
+                .map(|token| token.secret().to_string())
+                .unwrap_or(refresh_token.to_string());
 
-        create_auth_tokens(device, user, Some(rolled_refresh_token), token_response.access_token().secret())
-    } else {
-        err!("Impossible to retrieve new access token, refresh_token is missing")
+            create_auth_tokens(device, user, Some(rolled_refresh_token), token_response.access_token().secret())
+        }
+        Some(TokenWrapper::Access(access_token)) => {
+            let exp_limit = (Utc::now().naive_utc() + *DEFAULT_BW_EXPIRATION).timestamp();
+
+            match SSO_JWT_VALIDATION.decode_basic_token("access_token", access_token) {
+                Err(err) => err!(format!("Impossible to read access_token: {err}")),
+                Ok(claims) if claims.exp < exp_limit => {
+                    err_silent!("Access token is close to expiration but we have no refresh token")
+                }
+                Ok(_) => {
+                    let at = AccessToken::new(access_token.to_string());
+                    let client = CoreClient::cached().await?;
+                    match client.user_info_async(at).await {
+                        Err(err) => err_silent!(format!(
+                            "Failed to retrieve user info, token has probably been invalidated: {err}"
+                        )),
+                        Ok(_) => create_auth_tokens(device, user, None, access_token),
+                    }
+                }
+            }
+        }
+        None => err!("No token present while in SSO"),
     }
 }
