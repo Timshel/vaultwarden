@@ -988,6 +988,12 @@ impl AuthMethodScope for AuthMethod {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub enum TokenWrapper {
+    Access(String),
+    Refresh(String),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RefreshJwtClaims {
     // Not before
     pub nbf: i64,
@@ -1000,22 +1006,18 @@ pub struct RefreshJwtClaims {
 
     pub device_token: String,
 
-    pub refresh_token: Option<String>,
+    pub token: Option<TokenWrapper>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AuthTokens {
-    pub refresh_claims: Option<RefreshJwtClaims>,
+    pub refresh_claims: RefreshJwtClaims,
     pub access_claims: LoginJwtClaims,
 }
 
 impl AuthTokens {
-    pub fn refresh_token(&self) -> serde_json::Value {
-        self.refresh_claims
-            .as_ref()
-            .map(|r| encode_jwt(&r))
-            .map(serde_json::Value::String)
-            .unwrap_or(serde_json::Value::Null)
+    pub fn refresh_token(&self) -> String {
+        encode_jwt(&self.refresh_claims)
     }
 
     pub fn access_token(&self) -> String {
@@ -1027,7 +1029,7 @@ impl AuthTokens {
     }
 
     pub fn scope(&self) -> String {
-        self.refresh_claims.as_ref().map(|r| r.sub.scope()).unwrap_or("api".to_string())
+        self.refresh_claims.sub.scope()
     }
 
     // Create refresh_token and access_token with default validity
@@ -1042,11 +1044,11 @@ impl AuthTokens {
             iss: JWT_LOGIN_ISSUER.to_string(),
             sub,
             device_token: device.refresh_token.clone(),
-            refresh_token: None,
+            token: None,
         };
 
         Self {
-            refresh_claims: Some(refresh_claims),
+            refresh_claims,
             access_claims,
         }
     }
