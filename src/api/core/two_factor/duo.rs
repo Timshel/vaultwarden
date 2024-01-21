@@ -283,7 +283,6 @@ fn sign_duo_values(key: &str, email: &str, ikey: &str, prefix: &str, expire: i64
     format!("{}|{}", cookie, crypto::hmac_sign(key, &cookie))
 }
 
-// Email needs to be normalized before comparison with auth_user below (usually should come from DB).
 pub async fn validate_duo_login(email: &str, response: &str, conn: &mut DbConn) -> EmptyResult {
     let split: Vec<&str> = response.split(':').collect();
     if split.len() != 2 {

@@ -795,7 +795,7 @@ fn prevalidate() -> JsonResult {
 #[get("/connect/oidc-signin?<code>&<state>", rank = 1)]
 fn oidcsignin(code: String, state: String, jar: &CookieJar<'_>) -> ApiResult<CustomRedirect> {
     let redirect_uri = jar
-        .get(&sso::COOKIE_NAME_REDIRECT.to_string())
+        .get(sso::COOKIE_NAME_REDIRECT)
         .map(|c| c.value().to_string())
         .unwrap_or(format!("{}/sso-connector.html", CONFIG.domain()));
 

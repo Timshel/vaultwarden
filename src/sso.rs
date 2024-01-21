@@ -24,7 +24,7 @@ use crate::{
     CONFIG,
 };
 
-pub static COOKIE_NAME_REDIRECT: Lazy<String> = Lazy::new(|| "sso_redirect_url".to_string());
+pub static COOKIE_NAME_REDIRECT: &str = "sso_redirect_url";
 
 static AC_CACHE: Lazy<Cache<String, AuthenticatedUser>> =
     Lazy::new(|| Cache::builder().max_capacity(1000).time_to_live(Duration::from_secs(10 * 60)).build());
@@ -34,7 +34,7 @@ static CLIENT_CACHE: RwLock<Option<CoreClient>> = RwLock::new(None);
 static SSO_JWT_VALIDATION: Lazy<Decoding> = Lazy::new(prepare_decoding);
 
 // Will Panic if SSO is activated and a key file is present but we can't decode its content
-pub fn load_lazy() {
+pub fn pre_load_sso_jwt_validation() {
     Lazy::force(&SSO_JWT_VALIDATION);
 }
 
