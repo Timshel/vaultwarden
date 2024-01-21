@@ -77,7 +77,7 @@ async fn main() -> Result<(), Error> {
         exit(1);
     });
     check_web_vault();
-    crate::sso::load_lazy();
+    crate::sso::pre_load_sso_jwt_validation();
 
     create_dir(&CONFIG.icon_cache_folder(), "icon cache");
     create_dir(&CONFIG.tmp_folder(), "tmp folder");
