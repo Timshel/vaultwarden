@@ -184,7 +184,6 @@ async fn _sso_login(data: ConnectData, user_uuid: &mut Option<String>, conn: &mu
 
     let now = Utc::now().naive_utc();
     let (user, mut device, new_device, twofactor_token) = match user_data {
-        Some(data) => data,
         None => {
             let mut user = User::new(user_infos.email, user_infos.user_name);
             user.verified_at = Some(now);
@@ -194,6 +193,15 @@ async fn _sso_login(data: ConnectData, user_uuid: &mut Option<String>, conn: &mu
 
             (user, device, new_device, None)
         }
+        Some((mut user, device, new_device, twofactor_token)) if user.password_hash.is_empty() => {
+            user.verified_at = Some(now);
+            if let Some(user_name) = user_infos.user_name {
+                user.name = user_name;
+            }
+            user.save(conn).await?;
+            (user, device, new_device, twofactor_token)
+        }
+        Some(data) => data,
     };
 
     // Set the user_uuid here to be passed back used for event logging.
