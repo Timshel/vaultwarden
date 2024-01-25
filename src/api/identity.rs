@@ -28,7 +28,7 @@ use crate::{
 };
 
 pub fn routes() -> Vec<Route> {
-    routes![login, prelogin, identity_register, prevalidate, authorize, oidcsignin, oidcsignin_error]
+    routes![login, prelogin, identity_register, _prevalidate, prevalidate, authorize, oidcsignin, oidcsignin_error]
 }
 
 #[post("/connect/token", data = "<data>")]
@@ -797,7 +797,13 @@ fn _check_is_some<T>(value: &Option<T>, msg: &str) -> EmptyResult {
     Ok(())
 }
 
+// Deprecated but still needed for Mobile apps
 #[get("/account/prevalidate")]
+fn _prevalidate() -> JsonResult {
+    prevalidate()
+}
+
+#[get("/sso/prevalidate")]
 fn prevalidate() -> JsonResult {
     let claims = auth::generate_ssotoken_claims();
     let sso_token = auth::encode_jwt(&claims);
