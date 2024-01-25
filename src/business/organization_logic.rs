@@ -22,7 +22,7 @@ pub async fn invite(
     let mut user_org_status = UserOrgStatus::Invited;
 
     // automatically accept existing users if mail is disabled
-    if !user.password_hash.is_empty() && !CONFIG.mail_enabled() {
+    if user.public_key.is_some() && !CONFIG.mail_enabled() {
         user_org_status = UserOrgStatus::Accepted;
     }
 
