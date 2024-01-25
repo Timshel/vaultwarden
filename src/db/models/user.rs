@@ -165,21 +165,11 @@ impl User {
     ///                       These routes are able to use the previous stamp id for the next 2 minutes.
     ///                       After these 2 minutes this stamp will expire.
     ///
-    pub fn set_password(
-        &mut self,
-        password: &str,
-        new_key: Option<String>,
-        reset_security_stamp: bool,
-        allow_next_route: Option<Vec<String>>,
-    ) {
+    pub fn set_password(&mut self, password: &str, reset_security_stamp: bool, allow_next_route: Option<Vec<String>>) {
         self.password_hash = crypto::hash_password(password.as_bytes(), &self.salt, self.password_iterations as u32);
 
         if let Some(route) = allow_next_route {
             self.set_stamp_exception(route);
-        }
-
-        if let Some(new_key) = new_key {
-            self.akey = new_key;
         }
 
         if reset_security_stamp {

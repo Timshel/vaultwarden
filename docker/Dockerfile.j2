@@ -86,6 +86,7 @@ RUN xx-apt-get install -y \
 # Get all version of the front-end
 RUN curl -L "${OIDC_WEB_RELEASE}/oidc_button_web_vault.tar.gz" | tar -xz ; mv web-vault /web-vault_button
 RUN curl -L "${OIDC_WEB_RELEASE}/oidc_override_web_vault.tar.gz" | tar -xz ; mv web-vault /web-vault_override
+RUN curl -L "${OIDC_WEB_RELEASE}/oidc_experimental_web_vault.tar.gz" | tar -xz ; mv web-vault /web-vault_experimental
 
 # Create CARGO_HOME folder and don't download rust docs
 RUN mkdir -pv "${CARGO_HOME}" \
@@ -221,6 +222,7 @@ COPY docker/start.sh /start.sh
 
 COPY --from=build /web-vault_button ./web-vault_button
 COPY --from=build /web-vault_override ./web-vault_override
+COPY --from=build /web-vault_experimental ./web-vault_experimental
 COPY --from=build /app/target/final/vaultwarden .
 
 HEALTHCHECK --interval=60s --timeout=10s CMD ["/healthcheck.sh"]
