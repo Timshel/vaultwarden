@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     branches:
-      - main
+      - experimental
 
     tags:
       - '*'
@@ -28,7 +28,7 @@ jobs:
 
   docker-build:
     runs-on: ubuntu-22.04
-    environment: main
+    environment: experimental
     timeout-minutes: 120
     needs: skip_check
     if: ${{ needs.skip_check.outputs.should_skip != 'true' && github.repository == 'timshel/vaultwarden' }}
