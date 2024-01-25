@@ -202,7 +202,7 @@ async fn _sso_login(
 
             (user, device, new_device, None)
         }
-        Some((mut user, device, new_device, twofactor_token)) if user.password_hash.is_empty() => {
+        Some((mut user, device, new_device, twofactor_token)) if user.public_key.is_none() => {
             user.verified_at = Some(now);
             if let Some(user_name) = user_infos.user_name {
                 user.name = user_name;
@@ -393,7 +393,7 @@ async fn authenticated_response(
         "scope": auth_tokens.scope(),
         "unofficialServer": true,
         "UserDecryptionOptions": {
-            "HasMasterPassword": !user.password_hash.is_empty(),
+            "HasMasterPassword": user.public_key.is_some(),
             "Object": "userDecryptionOptions"
         },
     });
