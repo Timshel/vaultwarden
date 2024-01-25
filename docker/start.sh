@@ -26,6 +26,9 @@ rm -f /web-vault
 if [ "$SSO_FRONTEND" = "override" ] ; then
     echo "### Running web-vault frontend with SSO override ###"
     ln -s /web-vault_override /web-vault
+elif [ "$SSO_FRONTEND" = "experimental" ] ; then
+    echo "### Running web-vault frontend with SSO experimental ###"
+    ln -s /web-vault_experimental /web-vault
 else
     echo "### Running web-vault frontend with SSO button ###"
     ln -s /web-vault_button /web-vault
