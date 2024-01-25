@@ -75,6 +75,29 @@ Ex to build with latest: `--build-arg OIDC_WEB_RELEASE="https://github.com/Timsh
 
 [Readme](test/oidc/README.md)
 
+## Experimental version
+
+### Stop storing Master Password hash
+
+This allow to stop storing the Master password in the server database.
+This is a work in progress and released for testing.
+Once activated newly created account will no longer store a master password hash, making reverting to a standard VaultWarden instance troublesome.
+
+#### To activate
+
+ - `SSO_EXPERIMENTAL_NO_MASTER_PWD`: Control the activation of the feature. Default `false`.
+
+Additionnaly a new web build is available which stop sending the hash cf `experimental` in [Timshel/oidc_web_builds](https://github.com/Timshel/oidc_web_builds/releases)
+You'll need to pass an env variable: `-e SSO_FRONTEND='experimental'` (cf [start.sh](docker/start.sh)).
+
+#### To revert
+
+You'll first need to run the server without the `experimental` front-end.
+\
+You can then go to `Account settings \ Security \ Keys` and trigger the `Change KDF`.
+\
+This endpoint is not modified and will save the new master password hash, every user will need to do this to restore a Master password in db.
+
 ## DB Migration
 
 ATM The migrations add an independant table `sso_nonce` and a column `invited_by_email` to `users_organizations`.

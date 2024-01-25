@@ -90,7 +90,7 @@ pub struct SetPasswordData {
     KdfParallelism: Option<i32>,
     Key: String,
     Keys: Option<KeysData>,
-    MasterPasswordHash: String,
+    MasterPasswordHash: Option<String>,
     MasterPasswordHint: Option<String>,
     #[allow(dead_code)]
     OrgIdentifier: Option<String>,
@@ -201,7 +201,7 @@ pub async fn _register(data: JsonUpcase<RegisterData>, mut conn: DbConn) -> Json
     user.client_kdf_memory = data.KdfMemory;
     user.client_kdf_parallelism = data.KdfParallelism;
 
-    user.set_password(&data.MasterPasswordHash, Some(data.Key), true, None);
+    user.set_password(&data.MasterPasswordHash, true, None);
     user.password_hint = password_hint;
 
     // Add extra fields if present
@@ -209,6 +209,7 @@ pub async fn _register(data: JsonUpcase<RegisterData>, mut conn: DbConn) -> Json
         user.name = name;
     }
 
+    user.akey = data.Key;
     if let Some(keys) = data.Keys {
         user.private_key = Some(keys.EncryptedPrivateKey);
         user.public_key = Some(keys.PublicKey);
@@ -238,10 +239,27 @@ async fn post_set_password(data: JsonUpcase<SetPasswordData>, headers: Headers, 
     let data: SetPasswordData = data.into_inner().data;
     let mut user = headers.user;
 
-    // Check against the password hint setting here so if it fails, the user
-    // can retry without losing their invitation below.
-    let password_hint = clean_password_hint(&data.MasterPasswordHint);
-    enforce_password_hint_setting(&password_hint)?;
+    if !CONFIG.sso_enabled() || !CONFIG.sso_experimental_no_master_pwd() {
+        if let Some(password_hash) = data.MasterPasswordHash {
+            // Check against the password hint setting here so if it fails, the user
+            // can retry without losing their invitation below.
+            let password_hint = clean_password_hint(&data.MasterPasswordHint);
+            enforce_password_hint_setting(&password_hint)?;
+
+            // We need to allow revision-date to use the old security_timestamp
+            let routes = ["revision_date"];
+            let routes: Option<Vec<String>> = Some(routes.iter().map(ToString::to_string).collect());
+
+            user.set_password(&password_hash, false, routes);
+            user.password_hint = password_hint;
+
+            if CONFIG.mail_enabled() {
+                mail::send_set_password(&user.email.to_lowercase(), &user.name).await?;
+            }
+        } else {
+            err_code!("Missing password hash", Status::UnprocessableEntity.code)
+        }
+    }
 
     if let Some(client_kdf_iter) = data.KdfIterations {
         user.client_kdf_iter = client_kdf_iter;
@@ -251,23 +269,13 @@ async fn post_set_password(data: JsonUpcase<SetPasswordData>, headers: Headers, 
         user.client_kdf_type = client_kdf_type;
     }
 
-    // We need to allow revision-date to use the old security_timestamp
-    let routes = ["revision_date"];
-    let routes: Option<Vec<String>> = Some(routes.iter().map(ToString::to_string).collect());
-
     user.client_kdf_memory = data.KdfMemory;
     user.client_kdf_parallelism = data.KdfParallelism;
 
-    user.set_password(&data.MasterPasswordHash, Some(data.Key), false, routes);
-    user.password_hint = password_hint;
-
+    user.akey = data.Key;
     if let Some(keys) = data.Keys {
         user.private_key = Some(keys.EncryptedPrivateKey);
         user.public_key = Some(keys.PublicKey);
-    }
-
-    if CONFIG.mail_enabled() {
-        mail::send_set_password(&user.email.to_lowercase(), &user.name).await?;
     }
 
     user.save(&mut conn).await?;
@@ -374,8 +382,8 @@ async fn post_keys(data: JsonUpcase<KeysData>, headers: Headers, mut conn: DbCon
 #[derive(Deserialize)]
 #[allow(non_snake_case)]
 struct ChangePassData {
-    MasterPasswordHash: String,
-    NewMasterPasswordHash: String,
+    MasterPasswordHash: Option<String>,
+    NewMasterPasswordHash: Option<String>,
     MasterPasswordHint: Option<String>,
     Key: String,
 }
@@ -390,22 +398,37 @@ async fn post_password(
     let data: ChangePassData = data.into_inner().data;
     let mut user = headers.user;
 
-    if !user.check_valid_password(&data.MasterPasswordHash) {
-        err!("Invalid password")
-    }
-
     user.password_hint = clean_password_hint(&data.MasterPasswordHint);
     enforce_password_hint_setting(&user.password_hint)?;
+
+    if !CONFIG.sso_enabled() || !CONFIG.sso_experimental_no_master_pwd() {
+        if let Some(password_hash) = data.MasterPasswordHash {
+            if !user.check_valid_password(&password_hash) {
+                err!("Invalid password")
+            }
+        } else {
+            err_code!("Missing password hash", Status::UnprocessableEntity.code)
+        }
+
+        if let Some(new_password_hash) = data.NewMasterPasswordHash {
+            user.set_password(
+                &new_password_hash,
+                true,
+                Some(vec![
+                    String::from("post_rotatekey"),
+                    String::from("get_contacts"),
+                    String::from("get_public_keys"),
+                ]),
+            );
+        } else {
+            err_code!("Missing password hash", Status::UnprocessableEntity.code)
+        }
+    }
 
     log_user_event(EventType::UserChangedPassword as i32, &user.uuid, headers.device.atype, &headers.ip.ip, &mut conn)
         .await;
 
-    user.set_password(
-        &data.NewMasterPasswordHash,
-        Some(data.Key),
-        true,
-        Some(vec![String::from("post_rotatekey"), String::from("get_contacts"), String::from("get_public_keys")]),
-    );
+    user.akey = data.Key;
 
     let save_result = user.save(&mut conn).await;
 
@@ -469,7 +492,8 @@ async fn post_kdf(data: JsonUpcase<ChangeKdfData>, headers: Headers, mut conn: D
     }
     user.client_kdf_iter = data.KdfIterations;
     user.client_kdf_type = data.Kdf;
-    user.set_password(&data.NewMasterPasswordHash, Some(data.Key), true, None);
+    user.akey = data.Key;
+    user.set_password(&data.NewMasterPasswordHash, true, None);
     let save_result = user.save(&mut conn).await;
 
     nt.send_logout(&user, Some(headers.device.uuid)).await;
@@ -687,7 +711,8 @@ async fn post_email(
     user.email_new = None;
     user.email_new_token = None;
 
-    user.set_password(&data.NewMasterPasswordHash, Some(data.Key), true, None);
+    user.akey = data.Key;
+    user.set_password(&data.NewMasterPasswordHash, true, None);
 
     let save_result = user.save(&mut conn).await;
 
@@ -905,7 +930,7 @@ struct SecretVerificationRequest {
 pub async fn kdf_upgrade(user: &mut User, pwd_hash: &str, conn: &mut DbConn) -> ApiResult<()> {
     if user.password_iterations != CONFIG.password_iterations() {
         user.password_iterations = CONFIG.password_iterations();
-        user.set_password(pwd_hash, None, false, None);
+        user.set_password(pwd_hash, false, None);
 
         if let Err(e) = user.save(conn).await {
             error!("Error updating user: {:#?}", e);
@@ -923,11 +948,13 @@ async fn verify_password(
     let data: SecretVerificationRequest = data.into_inner().data;
     let mut user = headers.user;
 
-    if !user.check_valid_password(&data.MasterPasswordHash) {
-        err!("Invalid password")
-    }
+    if !CONFIG.sso_enabled() || !CONFIG.sso_experimental_no_master_pwd() {
+        if !user.check_valid_password(&data.MasterPasswordHash) {
+            err!("Invalid password")
+        }
 
-    kdf_upgrade(&mut user, &data.MasterPasswordHash, &mut conn).await?;
+        kdf_upgrade(&mut user, &data.MasterPasswordHash, &mut conn).await?;
+    }
 
     Ok(Json(json!({
       "MasterPasswordPolicy": {}, // Required for SSO login with mobile apps
