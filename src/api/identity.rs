@@ -441,7 +441,7 @@ async fn authenticated_response(
         "scope": auth_tokens.scope(),
         "unofficialServer": true,
         "UserDecryptionOptions": {
-            "HasMasterPassword": !user.password_hash.is_empty(),
+            "HasMasterPassword": user.public_key.is_some(),
             "Object": "userDecryptionOptions"
         },
     });
