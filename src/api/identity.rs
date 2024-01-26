@@ -207,7 +207,13 @@ async fn _sso_login(data: ConnectData, user_uuid: &mut Option<String>, conn: &mu
     // Set the user_uuid here to be passed back used for event logging.
     *user_uuid = Some(user.uuid.clone());
 
-    let auth_tokens = sso::create_auth_tokens(&device, &user, auth_user.refresh_token, &auth_user.access_token)?;
+    let auth_tokens = sso::create_auth_tokens(
+        &device,
+        &user,
+        auth_user.refresh_token,
+        &auth_user.access_token,
+        auth_user.expires_in,
+    )?;
 
     authenticated_response(&user, &mut device, new_device, auth_tokens, twofactor_token, &now, conn, ip).await
 }
