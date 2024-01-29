@@ -1,9 +1,10 @@
 use chrono::{NaiveDateTime, Utc};
 use num_traits::FromPrimitive;
-use rocket::serde::json::Json;
 use rocket::{
     form::{Form, FromForm},
     http::{Cookie, CookieJar, Status},
+    response::Redirect,
+    serde::json::Json,
     Route,
 };
 use serde_json::Value;
@@ -22,9 +23,7 @@ use crate::{
     auth::{AuthMethod, AuthMethodScope, ClientHeaders, ClientIp},
     db::{models::*, DbConn},
     error::MapResult,
-    mail, sso, util,
-    util::CustomRedirect,
-    CONFIG,
+    mail, sso, util, CONFIG,
 };
 
 pub fn routes() -> Vec<Route> {
@@ -813,34 +812,30 @@ fn prevalidate() -> JsonResult {
 }
 
 #[get("/connect/oidc-signin?<code>&<state>", rank = 1)]
-fn oidcsignin(code: String, state: String, jar: &CookieJar<'_>) -> ApiResult<CustomRedirect> {
-    let redirect_uri = jar
+fn oidcsignin(code: String, state: String, jar: &CookieJar<'_>) -> ApiResult<Redirect> {
+    let redirect_root = jar
         .get(sso::COOKIE_NAME_REDIRECT)
         .map(|c| c.value().to_string())
         .unwrap_or(format!("{}/sso-connector.html", CONFIG.domain()));
 
-    let redirect = CustomRedirect {
-        url: format!("{}?code={code}&state={state}", redirect_uri),
-        headers: Vec::with_capacity(0),
+    let mut url = match url::Url::parse(&redirect_root) {
+        Err(err) => err!(format!("Failed to parse redirect url ({redirect_root}): {err}")),
+        Ok(url) => url,
     };
 
-    Ok(redirect)
+    url.query_pairs_mut().append_pair("code", &code).append_pair("state", &state);
+
+    debug!("Redirection to {url}");
+
+    Ok(Redirect::temporary(String::from(url)))
 }
 
 // No good way to display the error
 // Bitwarden client appear to only care for code and state
 // cf: https://github.com/bitwarden/clients/blob/8e46ef1ae5be8b62b0d3d0b9d1b1c62088a04638/libs/angular/src/auth/components/sso.component.ts#L68C11-L68C23)
 #[get("/connect/oidc-signin?<error>&<error_description>", rank = 2)]
-fn oidcsignin_error(error: String, error_description: Option<String>) -> ApiResult<CustomRedirect> {
-    if CONFIG.sso_auth_failure_silent() {
-        warn!("SSO login failed with {error} and {:?}", error_description);
-        Ok(CustomRedirect {
-            url: format!("/#?error={error}"),
-            headers: Vec::with_capacity(0),
-        })
-    } else {
-        err!(format!("SSO login failed with {error} and {:?}", error_description));
-    }
+fn oidcsignin_error(error: String, error_description: Option<String>) -> ApiResult<Redirect> {
+    err!(format!("SSO login failed with {error} and {:?}", error_description))
 }
 
 #[derive(Debug, Clone, Default, FromForm)]
@@ -870,7 +865,7 @@ struct AuthorizeData {
 
 // The `redirect_uri` will change depending of the client (web, android, ios ..)
 #[get("/connect/authorize?<data..>")]
-async fn authorize(data: AuthorizeData, jar: &CookieJar<'_>, conn: DbConn) -> ApiResult<CustomRedirect> {
+async fn authorize(data: AuthorizeData, jar: &CookieJar<'_>, conn: DbConn) -> ApiResult<Redirect> {
     let AuthorizeData {
         redirect_uri,
         state,
@@ -886,8 +881,5 @@ async fn authorize(data: AuthorizeData, jar: &CookieJar<'_>, conn: DbConn) -> Ap
 
     let auth_url = sso::authorize_url(conn, state).await?;
 
-    Ok(CustomRedirect {
-        url: auth_url.to_string(),
-        headers: Vec::with_capacity(0),
-    })
+    Ok(Redirect::temporary(String::from(auth_url)))
 }

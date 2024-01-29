@@ -263,33 +263,6 @@ impl<'r> FromParam<'r> for SafeString {
     }
 }
 
-pub struct CustomRedirect {
-    pub url: String,
-    pub headers: Vec<(String, String)>,
-}
-
-impl<'r> rocket::response::Responder<'r, 'static> for CustomRedirect {
-    fn respond_to(self, _: &rocket::request::Request<'_>) -> rocket::response::Result<'static> {
-        let mut response = Response::build()
-            .status(rocket::http::Status {
-                code: 307,
-            })
-            .raw_header("Location", self.url)
-            .header(ContentType::HTML)
-            .finalize();
-
-        // Normal headers
-        response.set_raw_header("Referrer-Policy", "same-origin");
-        response.set_raw_header("X-XSS-Protection", "0");
-
-        for header in &self.headers {
-            response.set_raw_header(header.0.clone(), header.1.clone());
-        }
-
-        Ok(response)
-    }
-}
-
 // Log all the routes from the main paths list, and the attachments endpoint
 // Effectively ignores, any static file route, and the alive endpoint
 const LOGGED_ROUTES: [&str; 7] = ["/api", "/admin", "/identity", "/icons", "/attachments", "/events", "/notifications"];
