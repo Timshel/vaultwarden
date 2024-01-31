@@ -42,25 +42,20 @@ Then configure your server with `SSO_AUTHORITY=https://accounts.google.com`, `SS
 
 ## Microsoft Entra ID
 
-Only the v2 endpooint is compliant with the OpenID spec.
-The endpoint should be in the format: https://login.microsoftonline.com/${tenantguid}/v2.0
+1. Create an "App registration" in [Entra ID](https://entra.microsoft.com/) following [Identity | Applications | App registrations](https://entra.microsoft.com/#blade/Microsoft_AAD_RegisteredApps/ApplicationsListBlade/quickStartType//sourceType/Microsoft_AAD_IAM).
+2. From the "Overview" of your "App registration", you'll need the "Directory (tenant) ID" for the `SSO_AUTHORITY` variable and the "Application (client) ID" as the `SSO_CLIENT_ID` value.
+3. In "Certificates & Secrets" create an "App secret" , you'll need the "Secret Value" for the `SSO_CLIENT_SECRET` variable.
+4. In "Authentication" add https://vaultwarden.example.org/identity/connect/oidc-signin as "Web Redirect URI".
+5. In "API Permissions" make sure you have `profile`, `email` and `offline_access` listed under "API / Permission name" (`offline_access` is required, otherwise no refresh_token is returned, see https://github.com/MicrosoftDocs/azure-docs/issues/17134).
 
-You should able to find it on https://entra.microsoft.com/ following `Identity | Applications | App registrations | Endpoints`.
+Only the v2 endpooint is compliant with the OpenID spec, see https://github.com/MicrosoftDocs/azure-docs/issues/38427 and https://github.com/ramosbugs/openidconnect-rs/issues/122.
 
-Additionnaly you'll need to override the default scopes to add `offline_access` otherwise no refresh_token is returned ([cf](https://github.com/MicrosoftDocs/azure-docs/issues/17134)).
+Your configuration should look like this:
 
-Configuration should look like this:
-
-	- `SSO_AUTHORITY=https://login.microsoftonline.com/${tenantguid}/v2.0`,
-	- `SSO_SCOPES="email profile offline_access"`
-	- `SSO_CLIENT_ID=...`
-	- `SSO_CLIENT_SECRET=...`.
-
-Other endoints are not OpenID compliant, cf:
-
- - https://github.com/MicrosoftDocs/azure-docs/issues/38427
- - https://github.com/ramosbugs/openidconnect-rs/issues/122
-
+* `SSO_AUTHORITY=https://login.microsoftonline.com/${Directory (tenant) ID}/v2.0`
+* `SSO_SCOPES="email profile offline_access"`
+* `SSO_CLIENT_ID=${Application (client) ID}`
+* `SSO_CLIENT_SECRET=${Secret Value}`
 
 ## Session lifetime
 
