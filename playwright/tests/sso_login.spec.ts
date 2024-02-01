@@ -97,7 +97,7 @@ test('Non SSO login Failure', async ({ page, browser }, testInfo: TestInfo) => {
     await page.getByLabel('SSO sign-in is required')
 });
 
-test('No SSO login', async ({ page }, testInfo: TestInfo) => {
+test('SSO login Failure', async ({ page }, testInfo: TestInfo) => {
     await utils.restartVaultwarden(page, testInfo, {
         SSO_ENABLED: false
     }, false);
@@ -107,7 +107,13 @@ test('No SSO login', async ({ page }, testInfo: TestInfo) => {
     await page.getByLabel(/Email address/).fill(process.env.TEST_USER_MAIL);
     await page.getByRole('button', { name: 'Continue' }).click();
 
-    // No SSO button
-    await page.getByLabel('Master password');
-    await expect(page.getByRole('link', { name: /Enterprise single sign-on/ })).toHaveCount(0);
+    // Unlock page
+    await page.getByRole('link', { name: /Enterprise single sign-on/ }).click();
+
+    // SSO identifier page
+    await page.getByLabel('SSO identifier').fill('Random');
+    await page.getByRole('button', { name: 'Log in' }).click();
+
+    // An error should appear
+    await page.getByLabel('SSO sign-in is not available')
 });
