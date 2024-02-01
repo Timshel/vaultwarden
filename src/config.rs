@@ -638,7 +638,7 @@ make_config! {
         sso_auth_only_not_session:      bool,   true,   def,    false;
         /// Client cache for discovery endpoint. Duration in seconds (0 or less to disable).
         sso_client_cache_expiration:    u64,    true,   def,    0;
-        /// Log all tokens, LOG_LEVEL=debug is required
+        /// Log all tokens, `LOG_LEVEL=debug` or `LOG_LEVEL_OVERRIDE=vaultwarden::sso=debug` is required
         sso_debug_tokens:               bool,   true,   def,    false;
     },
 

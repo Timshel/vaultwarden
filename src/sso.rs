@@ -398,7 +398,7 @@ pub async fn exchange_code(wrapped_code: &str, conn: &mut DbConn) -> ApiResult<U
                 user_name,
             })
         }
-        Err(err) => err!(format!("Failed to contact token endpoint: {err}")),
+        Err(err) => err!(format!("Failed to contact token endpoint: {:?}", err)),
     }
 }
 
