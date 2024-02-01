@@ -1,8 +1,10 @@
 use std::env::consts::EXE_SUFFIX;
 use std::process::exit;
+use std::str::FromStr;
 use std::sync::RwLock;
 
 use job_scheduler_ng::Schedule;
+use log::LevelFilter;
 use once_cell::sync::Lazy;
 use reqwest::Url;
 
@@ -571,6 +573,8 @@ make_config! {
         log_file:               String, false,  option;
         /// Log level
         log_level:              String, false,  def,    "Info".to_string();
+        /// Override individual log level
+        log_level_override:     String, false,  def,    String::new();
 
         /// Enable DB WAL |> Turning this off might lead to worse performance, but might help if using vaultwarden on some exotic filesystems,
         /// that do not support WAL. Please make sure you read project wiki on the topic before changing this setting.
@@ -1370,6 +1374,19 @@ impl Config {
 
     pub fn sso_authorize_extra_params_vec(&self) -> Vec<(String, String)> {
         parse_param_list(self.sso_authorize_extra_params())
+    }
+
+    pub fn log_overrides(&self) -> Vec<(String, LevelFilter)> {
+        parse_param_list(self.log_level_override())
+            .into_iter()
+            .filter_map(|(k, v)| match LevelFilter::from_str(&v) {
+                Ok(lv) => Some((k, lv)),
+                Err(_) => {
+                    println!("[WARNING] Invalid log level: {k}={v}");
+                    None
+                }
+            })
+            .collect()
     }
 }
 
