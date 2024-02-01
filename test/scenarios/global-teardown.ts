@@ -1,10 +1,11 @@
 import { type FullConfig } from '@playwright/test';
 import dotenv from 'dotenv';
 import dotenvExpand from 'dotenv-expand';
-const { exec } = require('node:child_process');
+import { exec } from 'node:child_process';
 
-var myEnv = dotenv.config({ path: 'test.env' });
-dotenvExpand.expand(myEnv);
+const utils = require('./global-utils');
+
+utils.loadEnv();
 var kcPath = process.env.KC_SETUP_PATH;
 
 async function globalTeardown(config: FullConfig) {

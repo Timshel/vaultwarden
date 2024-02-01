@@ -20,7 +20,8 @@ services:
     volumes:
       - ${KC_SETUP_PATH:-.}/keycloak_setup.sh:/opt/script/keycloak_setup.sh
   VaultWarden:
-    image: vaultwarden
+    container_name: oidc-vaultwarden-${ENV:-dev}
+    image: oidc-vaultwarden
     profiles: ["VaultWarden"]
     network_mode: "host"
     build:
@@ -29,5 +30,3 @@ services:
     depends_on:
       - keycloak
     env_file: ${ENV}.env
-    volumes:
-      - ./vaultwarden.sh:/etc/vaultwarden.sh

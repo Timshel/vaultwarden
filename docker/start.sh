@@ -22,4 +22,13 @@ elif [ -d /etc/bitwarden_rs.d ]; then
     done
 fi
 
+rm -f /web-vault
+if [ "$SSO_FRONTEND" = "override" ] ; then
+    echo "### Running web-vault frontend with SSO override ###"
+    ln -s /web-vault_override /web-vault
+else
+    echo "### Running web-vault frontend with SSO button ###"
+    ln -s /web-vault_button /web-vault
+fi
+
 exec /vaultwarden "${@}"
