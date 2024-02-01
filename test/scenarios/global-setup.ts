@@ -21,7 +21,7 @@ function readCurrentVersion(){
     }
 }
 
-function readDockerVersion(){
+function readDockerRelease(){
     try {
         const docker_settings = fs.readFileSync('../../docker/DockerSettings.yaml', {
             encoding: 'utf8',
@@ -29,7 +29,7 @@ function readDockerVersion(){
         });
 
         const settings = yaml.load(docker_settings);
-        return settings["vault_version"];
+        return settings["oidc_web_release"];
     } catch(err) {
         console.log(`Failed to read docker frontend current version: ${err}`);
     }
@@ -37,25 +37,25 @@ function readDockerVersion(){
 
 function retrieveFrontend(){
     const vw_version = readCurrentVersion();
-    const vv = readDockerVersion()
+    const oidc_release = readDockerRelease()
 
-    if( !vv ){
-        console.log("Empty docker frontend version");
+    if( !oidc_release ){
+        console.log("Empty docker frontend release");
         process.exit(1);
     }
 
     try {
-        if( vv != `v${vw_version}`) {
+        if( !vw_version || !oidc_release.endsWith(vw_version.replace("oidc_button-", "")) ){
             fs.rmSync("./data/web-vault", { recursive: true, force: true });
 
-            execSync(`cd data && wget -c https://github.com/dani-garcia/bw_web_builds/releases/download/${vv}/bw_web_${vv}.tar.gz -O - | tar xz`, { stdio: "inherit" });
+            execSync(`cd data && wget -c ${oidc_release}/oidc_button_web_vault.tar.gz  -O - | tar xz`, { stdio: "inherit" });
 
             // Make the SSO button visible
             execSync(`bash -c "sed -i 's#a.routerlink=./sso..,##' data/web-vault/app/main.*.css"`, { stdio: "inherit" });
 
-            console.log(`Retrieved bw_web_builds-${vv}`);
+            console.log(`Retrieved bw_web_builds-${oidc_release}`);
         } else {
-            console.log(`Using existing bw_web_builds-${vv}`);
+            console.log(`Using existing bw_web_builds-${oidc_release}`);
         }
     } catch(err) {
         console.log(`Failed to retrieve frontend: ${err}`);
