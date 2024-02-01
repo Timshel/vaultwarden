@@ -22,11 +22,13 @@ elif [ -d /etc/bitwarden_rs.d ]; then
     done
 fi
 
-# Toggle the SSO Link
-if [ "$SSO_ENABLED" = "true" ]; then
-    sed -i 's#a\[routerlink="/sso"\]#a\[routerlink="/sso-sed"\]#' /web-vault/app/main.*.css
+rm -f /web-vault
+if [ "$SSO_FRONTEND" = "override" ] ; then
+    echo "### Running web-vault frontend with SSO override ###"
+    ln -s /web-vault_override /web-vault
 else
-    sed -i 's#a\[routerlink="/sso-sed"\]#a\[routerlink="/sso"\]#' /web-vault/app/main.*.css
+    echo "### Running web-vault frontend with SSO button ###"
+    ln -s /web-vault_button /web-vault
 fi
 
 exec /vaultwarden "${@}"
