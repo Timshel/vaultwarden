@@ -131,7 +131,9 @@ Then you can access :
  - `VaultWarden` on http://127.0.0.1:8000 with the default user `test@yopmail.com/test`.
  - `Keycloak` on http://127.0.0.1:8080/admin/master/console/ with the default user `admin/admin`
 
-To proceed with an SSO login after you enter the email, on the screen prompting for `Master Password` the SSO button should be visible.
+## Switching VaultWarden front-end
+
+You can switch between both [version](https://github.com/Timshel/oidc_web_builds) of the front-end using the env variable `SSO_FRONTEND` with `button` or `override` (default is `button`).
 
 ## Running only Keycloak
 
@@ -141,11 +143,13 @@ Since the `VaultWarden` service is defined with a `profile` you can just use the
 > docker-compose --profile keycloak up
 ```
 
-When running with a local VaultWarden you'll need to make the SSO button visible using :
+When running with a local VaultWarden, if you are using a front-end build from [dani-garcia/bw_web_builds](https://github.com/dani-garcia/bw_web_builds/releases) you'll need to make the SSO button visible using :
 
 ```bash
 sed -i 's#a\[routerlink="/sso"\],##' /web-vault/app/main.*.css
 ```
+
+Or use one of the prebuilt front-end from [timshel/oidc_web_builds](https://github.com/Timshel/oidc_web_builds/releases).
 
 Otherwise you'll need to reveal the SSO login button using the debug console (F12)
 

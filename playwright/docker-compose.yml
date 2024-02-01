@@ -13,8 +13,8 @@ services:
 
   Vaultwarden:
     profiles: ["playwright", "vaultWarden"]
-    container_name: playwright_oidc_vaultwarden-${ENV:-dev}
-    image: playwright_oidc_vaultwarden-${ENV:-dev}
+    container_name: playwright_oidc_vaultwarden_main-${ENV:-dev}
+    image: playwright_oidc_vaultwarden_main-${ENV:-dev}
     network_mode: "host"
     build:
       context: compose/vaultwarden
@@ -33,8 +33,8 @@ services:
 
   Playwright:
     profiles: ["playwright"]
-    container_name: playwright_oidc_playwright
-    image: playwright_oidc_playwright
+    container_name: playwright_oidc_playwright_main
+    image: playwright_oidc_playwright_main
     network_mode: "host"
     build:
       context: .
@@ -85,7 +85,7 @@ services:
 
   Keycloak:
     profiles: ["keycloak", "vaultWarden"]
-    container_name: keycloak-${ENV:-dev}
+    container_name: keycloak-main-${ENV:-dev}
     image: quay.io/keycloak/keycloak:25.0.1
     network_mode: "host"
     command:
@@ -94,8 +94,8 @@ services:
 
   KeycloakSetup:
     profiles: ["keycloak", "vaultWarden"]
-    container_name: keycloakSetup-${ENV:-dev}
-    image: keycloak_setup-${ENV:-dev}
+    container_name: keycloakSetup-main-${ENV:-dev}
+    image: keycloak_setup-main-${ENV:-dev}
     build:
       context: compose
       dockerfile: keycloak_setup.dockerfile
