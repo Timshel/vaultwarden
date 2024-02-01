@@ -8,26 +8,6 @@
 # 	https://docs.docker.com/develop/develop-images/multistage-build/
 # 	https://whitfin.io/speeding-up-rust-docker-builds/
 
-####################### VAULT BUILD IMAGE #######################
-# The web-vault digest specifies a particular web-vault build on Docker Hub.
-# Using the digest instead of the tag name provides better security,
-# as the digest of an image is immutable, whereas a tag name can later
-# be changed to point to a malicious image.
-#
-# To verify the current digest for a given tag name:
-# - From https://hub.docker.com/r/vaultwarden/web-vault/tags,
-#   click the tag name to view the digest of the image it currently points to.
-# - From the command line:
-#     $ docker pull docker.io/vaultwarden/web-vault:v2024.1.2b
-#     $ docker image inspect --format "{{.RepoDigests}}" docker.io/vaultwarden/web-vault:v2024.1.2b
-#     [docker.io/vaultwarden/web-vault@sha256:798c0c893b6d16728878ff280b49da08863334d1f8dd88895580dc3dba622f08]
-#
-# - Conversely, to get the tag name from the digest:
-#     $ docker image inspect --format "{{.RepoTags}}" docker.io/vaultwarden/web-vault@sha256:798c0c893b6d16728878ff280b49da08863334d1f8dd88895580dc3dba622f08
-#     [docker.io/vaultwarden/web-vault:v2024.1.2b]
-#
-FROM --platform=linux/amd64 docker.io/vaultwarden/web-vault@sha256:798c0c893b6d16728878ff280b49da08863334d1f8dd88895580dc3dba622f08 as vault
-
 ########################## Cross Compile Docker Helper Scripts ##########################
 ## We use the linux/amd64 no matter which Build Platform, since these are all bash scripts
 ## And these bash scripts do not have any significant difference if at all
@@ -40,6 +20,8 @@ COPY --from=xx / /
 ARG TARGETARCH
 ARG TARGETVARIANT
 ARG TARGETPLATFORM
+
+ARG OIDC_WEB_RELEASE="https://github.com/Timshel/oidc_web_builds/releases/download/v2024.1.2-6"
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
@@ -59,11 +41,13 @@ RUN apt-get update && \
     apt-get install -y \
         --no-install-recommends \
         clang \
+        curl \
         pkg-config \
         git \
         "libc6-$(xx-info debian-arch)-cross" \
         "libc6-dev-$(xx-info debian-arch)-cross" \
-        "linux-libc-dev-$(xx-info debian-arch)-cross" && \
+        "linux-libc-dev-$(xx-info debian-arch)-cross" \
+        wget && \
     # Run xx-cargo early, since it sometimes seems to break when run at a later stage
     echo "export CARGO_TARGET=$(xx-cargo --print-target-triple)" >> /env-cargo
 
@@ -79,6 +63,10 @@ RUN xx-apt-get install -y \
     # Installing them the normal way breaks several other packages (again)
     apt-get download "libmariadb-dev-compat:$(xx-info debian-arch)" "libmariadb-dev:$(xx-info debian-arch)" && \
     dpkg --force-all -i ./libmariadb-dev*.deb
+
+# Get all version of the front-end
+RUN curl -L "${OIDC_WEB_RELEASE}/oidc_button_web_vault.tar.gz" | tar -xz ; mv web-vault /web-vault_button
+RUN curl -L "${OIDC_WEB_RELEASE}/oidc_override_web_vault.tar.gz" | tar -xz ; mv web-vault /web-vault_override
 
 # Create CARGO_HOME folder and don't download rust docs
 RUN mkdir -pv "${CARGO_HOME}" \
@@ -188,7 +176,8 @@ WORKDIR /
 COPY docker/healthcheck.sh /healthcheck.sh
 COPY docker/start.sh /start.sh
 
-COPY --from=vault /web-vault ./web-vault
+COPY --from=build /web-vault_button ./web-vault_button
+COPY --from=build /web-vault_override ./web-vault_override
 COPY --from=build /app/target/final/vaultwarden .
 
 HEALTHCHECK --interval=60s --timeout=10s CMD ["/healthcheck.sh"]
