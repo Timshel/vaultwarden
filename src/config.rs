@@ -629,8 +629,6 @@ make_config! {
         sso_scopes:                     String, false,   def,   "email profile".to_string();
         /// CallBack Path
         sso_callback_path:              String, false,  gen,    |c| generate_sso_callback_path(&c.domain);
-        /// Allow workaround so SSO logins accept all invites
-        sso_acceptall_invites:          bool,   true,   def,     false;
         /// Optional sso public key
         sso_key_filepath:               String, false,  auto,   |c| format!("{}/{}", c.data_folder, "sso_key.pub.pem");
         /// Optional sso master password policy
@@ -1383,7 +1381,6 @@ where
     reg!("email/pw_hint_some", ".html");
     reg!("email/send_2fa_removed_from_org", ".html");
     reg!("email/send_emergency_access_invite", ".html");
-    reg!("email/send_org_enrolled", ".html");
     reg!("email/send_org_invite", ".html");
     reg!("email/send_single_org_removed_from_org", ".html");
     reg!("email/set_password", ".html");
