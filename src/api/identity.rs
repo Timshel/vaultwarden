@@ -41,6 +41,7 @@ async fn login(data: Form<ConnectData>, client_header: ClientHeaders, mut conn: 
             _check_is_some(&data.refresh_token, "refresh_token cannot be blank")?;
             _refresh_login(data, &mut conn).await
         }
+        "password" if CONFIG.sso_enabled() && CONFIG.sso_only() => err!("SSO sign-in is required"),
         "password" => {
             _check_is_some(&data.client_id, "client_id cannot be blank")?;
             _check_is_some(&data.password, "password cannot be blank")?;
@@ -64,7 +65,7 @@ async fn login(data: Form<ConnectData>, client_header: ClientHeaders, mut conn: 
 
             _api_key_login(data, &mut user_uuid, &mut conn, &client_header.ip).await
         }
-        "authorization_code" => {
+        "authorization_code" if CONFIG.sso_enabled() => {
             _check_is_some(&data.client_id, "client_id cannot be blank")?;
             _check_is_some(&data.code, "code cannot be blank")?;
 
@@ -74,6 +75,7 @@ async fn login(data: Form<ConnectData>, client_header: ClientHeaders, mut conn: 
 
             _sso_login(data, &mut user_uuid, &mut conn, &client_header.ip).await
         }
+        "authorization_code" => err!("SSO sign-in is not available"),
         t => err!("Invalid type", t),
     };
 
@@ -151,10 +153,6 @@ async fn _refresh_login(data: ConnectData, conn: &mut DbConn) -> JsonResult {
 
 // After exchanging the code we need to check first if 2FA is needed before continuing
 async fn _sso_login(data: ConnectData, user_uuid: &mut Option<String>, conn: &mut DbConn, ip: &ClientIp) -> JsonResult {
-    if !CONFIG.sso_enabled() {
-        err!("SSO sign-in is disabled");
-    }
-
     AuthMethod::Sso.check_scope(data.scope.as_ref())?;
 
     // Ratelimit the login
@@ -223,10 +221,6 @@ async fn _password_login(
     conn: &mut DbConn,
     ip: &ClientIp,
 ) -> JsonResult {
-    if CONFIG.sso_enabled() && CONFIG.sso_only() {
-        err!("SSO sign-in is required");
-    }
-
     // Validate scope
     AuthMethod::Password.check_scope(data.scope.as_ref())?;
 
@@ -789,11 +783,15 @@ fn _prevalidate() -> JsonResult {
 
 #[get("/sso/prevalidate")]
 fn prevalidate() -> JsonResult {
-    let claims = auth::generate_ssotoken_claims();
-    let sso_token = auth::encode_jwt(&claims);
-    Ok(Json(json!({
-        "token": sso_token,
-    })))
+    if CONFIG.sso_enabled() {
+        let claims = auth::generate_ssotoken_claims();
+        let sso_token = auth::encode_jwt(&claims);
+        Ok(Json(json!({
+            "token": sso_token,
+        })))
+    } else {
+        err!("SSO sign-in is not available")
+    }
 }
 
 #[get("/connect/oidc-signin?<code>&<state>", rank = 1)]
