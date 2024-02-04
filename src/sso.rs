@@ -16,7 +16,7 @@ use openidconnect::{
 use crate::{
     api::ApiResult,
     auth,
-    auth::{AuthMethodScope, TokenWrapper, DEFAULT_REFRESH_VALIDITY},
+    auth::{AuthMethod, AuthMethodScope, AuthTokens, TokenWrapper, DEFAULT_REFRESH_VALIDITY},
     db::{
         models::{Device, SsoNonce, User},
         DbConn,
@@ -338,18 +338,22 @@ pub fn create_auth_tokens(
     access_token: &str,
     expires_in: Option<Duration>,
 ) -> ApiResult<auth::AuthTokens> {
-    let (ap_nbf, ap_exp) = match (SSO_JWT_VALIDATION.decode_basic_token("access_token", access_token), expires_in) {
-        (Ok(ap), _) => (ap.nbf(), ap.exp),
-        (Err(_), Some(exp)) => {
-            let time_now = Utc::now().naive_utc();
-            (time_now.timestamp(), (time_now + exp).timestamp())
-        }
-        _ => err!("Non jwt access_token and empty expires_in"),
-    };
+    if !CONFIG.sso_auth_only_not_session() {
+        let (ap_nbf, ap_exp) = match (SSO_JWT_VALIDATION.decode_basic_token("access_token", access_token), expires_in) {
+            (Ok(ap), _) => (ap.nbf(), ap.exp),
+            (Err(_), Some(exp)) => {
+                let time_now = Utc::now().naive_utc();
+                (time_now.timestamp(), (time_now + exp).timestamp())
+            }
+            _ => err!("Non jwt access_token and empty expires_in"),
+        };
 
-    let access_claims = auth::LoginJwtClaims::new(device, user, ap_nbf, ap_exp, auth::AuthMethod::Sso.scope_vec());
+        let access_claims = auth::LoginJwtClaims::new(device, user, ap_nbf, ap_exp, auth::AuthMethod::Sso.scope_vec());
 
-    _create_auth_tokens(device, refresh_token, access_claims, access_token)
+        _create_auth_tokens(device, refresh_token, access_claims, access_token)
+    } else {
+        Ok(AuthTokens::new(device, user, AuthMethod::Sso))
+    }
 }
 
 fn _create_auth_tokens(
