@@ -621,8 +621,6 @@ make_config! {
         sso_client_id:                  String, true,   def,    String::new();
         /// Client Key
         sso_client_secret:              Pass,   true,   def,    String::new();
-        /// Silent redirect
-        sso_auth_failure_silent:        bool,   true,   def,    false;
         /// Authority Server
         sso_authority:                  String, true,   def,    String::new();
         /// Scopes required for authorize
@@ -633,6 +631,8 @@ make_config! {
         sso_key_filepath:               String, false,  auto,   |c| format!("{}/{}", c.data_folder, "sso_key.pub.pem");
         /// Optional sso master password policy
         sso_master_password_policy:     String, false,  option;
+        /// Use sso only for auth not the session lifecycle
+        sso_auth_only_not_session:      bool,   true,   def,    false;
     },
 
     /// Yubikey settings
