@@ -429,31 +429,27 @@ pub async fn exchange_refresh_token(
             )
         }
         Some(TokenWrapper::Access(access_token)) => {
-            let exp_limit = (Utc::now().naive_utc() + *DEFAULT_BW_EXPIRATION).timestamp();
+            let now = Utc::now().naive_utc();
+            let exp_limit = (now + *DEFAULT_BW_EXPIRATION).timestamp();
 
-            match SSO_JWT_VALIDATION.decode_basic_token("access_token", access_token) {
-                Err(err) => err!(format!("Impossible to read access_token: {err}")),
-                Ok(claims) if claims.exp < exp_limit => {
-                    err_silent!("Access token is close to expiration but we have no refresh token")
+            if refresh_claims.exp < exp_limit {
+                err_silent!("Access token is close to expiration but we have no refresh token")
+            }
+
+            let client = CoreClient::cached().await?;
+            match client.user_info_async(AccessToken::new(access_token.to_string())).await {
+                Err(err) => {
+                    err_silent!(format!("Failed to retrieve user info, token has probably been invalidated: {err}"))
                 }
-                Ok(claims) => {
-                    let at = AccessToken::new(access_token.to_string());
-                    let client = CoreClient::cached().await?;
-                    match client.user_info_async(at).await {
-                        Err(err) => err_silent!(format!(
-                            "Failed to retrieve user info, token has probably been invalidated: {err}"
-                        )),
-                        Ok(_) => {
-                            let access_claims = auth::LoginJwtClaims::new(
-                                device,
-                                user,
-                                claims.nbf(),
-                                claims.exp,
-                                auth::AuthMethod::Sso.scope_vec(),
-                            );
-                            _create_auth_tokens(device, None, access_claims, access_token)
-                        }
-                    }
+                Ok(_) => {
+                    let access_claims = auth::LoginJwtClaims::new(
+                        device,
+                        user,
+                        now.timestamp(),
+                        refresh_claims.exp,
+                        auth::AuthMethod::Sso.scope_vec(),
+                    );
+                    _create_auth_tokens(device, None, access_claims, access_token)
                 }
             }
         }
