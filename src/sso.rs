@@ -1,4 +1,5 @@
 use chrono::Utc;
+use std::borrow::Cow;
 use std::sync::RwLock;
 use std::time::Duration;
 use url::Url;
@@ -9,8 +10,8 @@ use once_cell::sync::Lazy;
 use openidconnect::core::{CoreClient, CoreProviderMetadata, CoreResponseType, CoreUserInfoClaims};
 use openidconnect::reqwest::async_http_client;
 use openidconnect::{
-    AccessToken, AuthenticationFlow, AuthorizationCode, ClientId, ClientSecret, CsrfToken, IdToken, Nonce,
-    OAuth2TokenResponse, RefreshToken, Scope,
+    AccessToken, AuthDisplay, AuthPrompt, AuthenticationFlow, AuthorizationCode, AuthorizationRequest, ClientId,
+    ClientSecret, CsrfToken, IdToken, Nonce, OAuth2TokenResponse, RefreshToken, ResponseType, Scope,
 };
 
 use crate::{
@@ -38,6 +39,21 @@ static DEFAULT_BW_EXPIRATION: Lazy<chrono::Duration> = Lazy::new(|| chrono::Dura
 // Will Panic if SSO is activated and a key file is present but we can't decode its content
 pub fn pre_load_sso_jwt_validation() {
     Lazy::force(&SSO_JWT_VALIDATION);
+}
+
+trait AuthorizationRequestExt<'a> {
+    fn add_extra_params<N: Into<Cow<'a, str>>, V: Into<Cow<'a, str>>>(self, params: Vec<(N, V)>) -> Self;
+}
+
+impl<'a, AD: AuthDisplay, P: AuthPrompt, RT: ResponseType> AuthorizationRequestExt<'a>
+    for AuthorizationRequest<'a, AD, P, RT>
+{
+    fn add_extra_params<N: Into<Cow<'a, str>>, V: Into<Cow<'a, str>>>(mut self, params: Vec<(N, V)>) -> Self {
+        for (key, value) in params {
+            self = self.add_extra_param(key, value);
+        }
+        self
+    }
 }
 
 #[rocket::async_trait]
@@ -103,6 +119,7 @@ pub async fn authorize_url(mut conn: DbConn, state: String) -> ApiResult<Url> {
             Nonce::new_random,
         )
         .add_scopes(scopes)
+        .add_extra_params(CONFIG.sso_authorize_extra_params_vec())
         .url();
 
     let sso_nonce = SsoNonce::new(nonce.secret().to_string());

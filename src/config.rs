@@ -624,7 +624,9 @@ make_config! {
         /// Authority Server
         sso_authority:                  String, true,   def,    String::new();
         /// Scopes required for authorize
-        sso_scopes:                     String, false,   def,   "email profile".to_string();
+        sso_scopes:                     String, false,  def,   "email profile".to_string();
+        /// Additionnal authorization url parameters
+        sso_authorize_extra_params:     String, false,  def,    String::new();
         /// CallBack Path
         sso_callback_path:              String, false,  gen,    |c| generate_sso_callback_path(&c.domain);
         /// Optional sso public key
@@ -1114,6 +1116,26 @@ fn smtp_convert_deprecated_ssl_options(smtp_ssl: Option<bool>, smtp_explicit_tls
     "starttls".to_string()
 }
 
+/// Allow to parse a multiline list of Key/Values (`key=value`)
+/// Will ignore comment lines (starting with `//`)
+fn parse_param_list(config: String) -> Vec<(String, String)> {
+    config
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty() && !l.starts_with("//"))
+        .filter_map(|l| {
+            let split = l.split('=').collect::<Vec<&str>>();
+            match &split[..] {
+                [key, value] => Some(((*key).to_string(), (*value).to_string())),
+                _ => {
+                    println!("[WARNING] Failed to parse ({l}). Expected key=value");
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
 impl Config {
     pub fn load() -> Result<Self, Error> {
         // Loading from env and file
@@ -1326,6 +1348,10 @@ impl Config {
 
     pub fn sso_scopes_vec(&self) -> Vec<String> {
         self.sso_scopes().split_whitespace().map(str::to_string).collect()
+    }
+
+    pub fn sso_authorize_extra_params_vec(&self) -> Vec<(String, String)> {
+        parse_param_list(self.sso_authorize_extra_params())
     }
 }
 

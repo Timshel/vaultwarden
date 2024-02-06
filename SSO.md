@@ -18,6 +18,7 @@ The following configurations are available
  	- Should not include the `/.well-known/openid-configuration` part and no trailing `/`
  	- $SSO_AUTHORITY/.well-known/openid-configuration should return the a json document: https://openid.net/specs/openid-connect-discovery-1_0.html#ProviderConfigurationResponse
  - `SSO_SCOPES` : Optional, allow to override scopes if needed (default `"email profile"`)
+ - `SSO_AUTHORIZE_EXTRA_PARAMS` : Optional, allow to add extra parameter to the authorize redirection (default `""`)
  - `SSO_CLIENT_ID` : Client Id
  - `SSO_CLIENT_SECRET` : Client Secret
  - `SSO_KEY_FILEPATH` : Optional public key to validate the JWT token (without it signature check will not be done).
@@ -26,7 +27,29 @@ The following configurations are available
 
 The callback url is : `https://your.domain/identity/connect/oidc-signin`
 
-## Configuration example using GitLab
+## Keycloak
+
+Default access token lifetime might be only `5min`, set a longer value otherwise it will collide with `VaultWarden` front-end expiration detection which is also set at `5min`.
+\
+Set `Realm settings / Session / SSO Session Idle` to at least `10min` (`accessTokenLifespan` setting when using `kcadm.sh`).
+
+Server configuration, nothing specific just set:
+
+- `SSO_AUTHORITY=https://${domain}/realms/${realm_name}`
+- `SSO_CLIENT_ID`
+- `SSO_CLIENT_SECRET`
+
+## Authentik
+
+Default access token lifetime might be only `5min`, set a longer value otherwise it will collide with `VaultWarden` front-end expiration detection which is also set at `5min`.
+
+Server configuration, nothing specific just set:
+
+- `SSO_AUTHORITY=https://${domain}/application/o/${application_name}/` : trailing `/` is important
+- `SSO_CLIENT_ID`
+- `SSO_CLIENT_SECRET`
+
+## GitLab
 
 Create an application in your Gitlab Settings with
 
@@ -34,12 +57,29 @@ Create an application in your Gitlab Settings with
 - `Confidential`: `true`
 - `scopes`: `openid`, `profile`, `email`
 
-Then configure your server with `SSO_AUTHORITY=https://gitlab.com`, `SSO_CLIENT_ID` and `SSO_CLIENT_SECRET`.
+Then configure your server with
 
-## Configuration hints using Google
+ - `SSO_AUTHORITY=https://gitlab.com`
+ - `SSO_CLIENT_ID`
+ - `SSO_CLIENT_SECRET`
+
+## Google Auth
 
 Google [Documentation](https://developers.google.com/identity/openid-connect/openid-connect).
-Then configure your server with `SSO_AUTHORITY=https://accounts.google.com`, `SSO_CLIENT_ID` and `SSO_CLIENT_SECRET`.
+\
+By default without extra [configuration](https://developers.google.com/identity/protocols/oauth2/web-server#creatingclient) you won´t have a `refresh_token` and session will be limited to 1h.
+
+Configure your server with :
+
+  - `SSO_AUTHORITY=https://accounts.google.com`
+  -   ```conf
+	  SSO_AUTHORIZE_EXTRA_PARAMS="
+	  access_type=offline
+	  prompt=consent
+	  "
+	  ```
+  - `SSO_CLIENT_ID`
+  - `SSO_CLIENT_SECRET`
 
 ## Microsoft Entra ID
 
@@ -58,17 +98,30 @@ Your configuration should look like this:
 * `SSO_CLIENT_ID=${Application (client) ID}`
 * `SSO_CLIENT_SECRET=${Secret Value}`
 
+## Authelia
+
+To obtain a `refresh_token` to be able to extend session you'll need to add the `offline_access` scope.
+
+Config will look like:
+
+ - `SSO_SCOPES="email profile offline_access"`
+
 ## Session lifetime
 
-Session lifetime is dependant on refresh token and access token returned after calling your sso token endpoint (grant type `authorization_code`).
+Session lifetime is dependant on refresh token and access token returned after calling your SSO token endpoint (grant type `authorization_code`).
 If no refresh token is returned then the session will be limited to the access token lifetime.
 
 Tokens are not persisted in VaultWarden but wrapped in JWT tokens and returned to the application (The `refresh_token` and `access_token` values returned by VW `identity/connect/token` endpoint).
-Note that VaultWarden will always return a `refresh_token` for compatibility reasons with the web front and it presence does not indicate that a refresh token was returned by your sso (But you can decode its value with https://jwt.io and then check if the `token` field contain anything).
+Note that VaultWarden will always return a `refresh_token` for compatibility reasons with the web front and it presence does not indicate that a refresh token was returned by your SSO (But you can decode its value with https://jwt.io and then check if the `token` field contain anything).
 
 With a refresh token present, activity in the application will trigger a refresh of the access token when it's close to expiration ([5min](https://github.com/bitwarden/clients/blob/0bcb45ed5caa990abaff735553a5046e85250f24/libs/common/src/auth/services/token.service.ts#L126) in web client).
 
 Additionnaly for certain action a token check is performed, if we have a refresh token we will perform a refresh otherwise we'll call the user information endpoint to check the access token validity.
+
+### Disabling SSO session handling
+
+If you are unable to obtain a `refresh_token` or for any other reason you can disable SSO session handling and revert to the default handling.
+You'll need to enable `SSO_AUTH_ONLY_NOT_SESSION=true` then access token will be valid for 2h and refresh token for a year.
 
 ### Debug information
 
