@@ -77,7 +77,6 @@ async fn main() -> Result<(), Error> {
         exit(1);
     });
     check_web_vault();
-    crate::sso::pre_load_sso_jwt_validation();
 
     create_dir(&CONFIG.icon_cache_folder(), "icon cache");
     create_dir(&CONFIG.tmp_folder(), "tmp folder");
@@ -573,6 +572,7 @@ fn schedule_jobs(pool: db::DbPool) {
             if !CONFIG.trash_purge_schedule().is_empty() {
                 sched.add(Job::new(CONFIG.trash_purge_schedule().parse().unwrap(), || {
                     runtime.spawn(api::purge_trashed_ciphers(pool.clone()));
+                    runtime.spawn(db::models::SsoNonce::delete_expired(pool.clone()));
                 }));
             }
 

@@ -1,17 +1,19 @@
 use chrono::Utc;
+use regex::Regex;
 use std::borrow::Cow;
 use std::sync::RwLock;
 use std::time::Duration;
 use url::Url;
 
-use jsonwebtoken::{DecodingKey, Validation};
 use mini_moka::sync::Cache;
 use once_cell::sync::Lazy;
-use openidconnect::core::{CoreClient, CoreProviderMetadata, CoreResponseType, CoreUserInfoClaims};
+use openidconnect::core::{
+    CoreClient, CoreIdTokenVerifier, CoreProviderMetadata, CoreResponseType, CoreUserInfoClaims,
+};
 use openidconnect::reqwest::async_http_client;
 use openidconnect::{
     AccessToken, AuthDisplay, AuthPrompt, AuthenticationFlow, AuthorizationCode, AuthorizationRequest, ClientId,
-    ClientSecret, CsrfToken, IdToken, Nonce, OAuth2TokenResponse, RefreshToken, ResponseType, Scope,
+    ClientSecret, CsrfToken, Nonce, OAuth2TokenResponse, RefreshToken, ResponseType, Scope,
 };
 
 use crate::{
@@ -25,21 +27,16 @@ use crate::{
     CONFIG,
 };
 
-pub static COOKIE_NAME_REDIRECT: &str = "sso_redirect_url";
-
 static AC_CACHE: Lazy<Cache<String, AuthenticatedUser>> =
     Lazy::new(|| Cache::builder().max_capacity(1000).time_to_live(Duration::from_secs(10 * 60)).build());
 
 static CLIENT_CACHE: RwLock<Option<CoreClient>> = RwLock::new(None);
 
-static SSO_JWT_VALIDATION: Lazy<Decoding> = Lazy::new(prepare_decoding);
+static SSO_JWT_ISSUER: Lazy<String> = Lazy::new(|| format!("{}|sso", CONFIG.domain_origin()));
 
 static DEFAULT_BW_EXPIRATION: Lazy<chrono::Duration> = Lazy::new(|| chrono::Duration::minutes(5));
 
-// Will Panic if SSO is activated and a key file is present but we can't decode its content
-pub fn pre_load_sso_jwt_validation() {
-    Lazy::force(&SSO_JWT_VALIDATION);
-}
+pub static NONCE_EXPIRATION: Lazy<chrono::Duration> = Lazy::new(|| chrono::Duration::minutes(10));
 
 trait AuthorizationRequestExt<'a> {
     fn add_extra_params<N: Into<Cow<'a, str>>, V: Into<Cow<'a, str>>>(self, params: Vec<(N, V)>) -> Self;
@@ -56,11 +53,97 @@ impl<'a, AD: AuthDisplay, P: AuthPrompt, RT: ResponseType> AuthorizationRequestE
     }
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct SsoTokenJwtClaims {
+    // Not before
+    pub nbf: i64,
+    // Expiration time
+    pub exp: i64,
+    // Issuer
+    pub iss: String,
+    // Subject
+    pub sub: String,
+}
+
+pub fn encode_ssotoken_claims() -> String {
+    let time_now = Utc::now().naive_utc();
+    let claims = SsoTokenJwtClaims {
+        nbf: time_now.timestamp(),
+        exp: (time_now + chrono::Duration::minutes(2)).timestamp(),
+        iss: SSO_JWT_ISSUER.to_string(),
+        sub: "vaultwarden".to_string(),
+    };
+
+    auth::encode_jwt(&claims)
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub enum OIDCCodeWrapper {
+    Ok {
+        code: String,
+        state: String,
+    },
+    Error {
+        state: String,
+        error: String,
+        error_description: Option<String>,
+    },
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct OIDCCodeClaims {
+    // Expiration time
+    pub exp: i64,
+    // Issuer
+    pub iss: String,
+
+    pub code: OIDCCodeWrapper,
+}
+
+pub fn encode_code_claims(code: OIDCCodeWrapper) -> String {
+    let time_now = Utc::now().naive_utc();
+    let claims = OIDCCodeClaims {
+        exp: (time_now + chrono::Duration::minutes(5)).timestamp(),
+        iss: SSO_JWT_ISSUER.to_string(),
+        code,
+    };
+
+    auth::encode_jwt(&claims)
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct BasicTokenClaims {
+    iat: Option<i64>,
+    nbf: Option<i64>,
+    exp: i64,
+}
+
+impl BasicTokenClaims {
+    fn nbf(&self) -> i64 {
+        self.nbf.or(self.iat).unwrap_or_else(|| Utc::now().naive_utc().timestamp())
+    }
+}
+
+fn decode_token_claims(token_name: &str, token: &str) -> ApiResult<BasicTokenClaims> {
+    let mut validation = jsonwebtoken::Validation::default();
+    validation.set_issuer(&[CONFIG.sso_authority()]);
+    validation.insecure_disable_signature_validation();
+    validation.validate_aud = false;
+
+    match jsonwebtoken::decode(token, &jsonwebtoken::DecodingKey::from_secret(&[]), &validation) {
+        Ok(btc) => Ok(btc.claims),
+        Err(err) => err_silent!(format!("Failed to decode basic token claims from {token_name}: {err}")),
+    }
+}
+
 #[rocket::async_trait]
 trait CoreClientExt {
     async fn _get_client() -> ApiResult<CoreClient>;
     async fn cached() -> ApiResult<CoreClient>;
+
     async fn user_info_async(&self, access_token: AccessToken) -> ApiResult<CoreUserInfoClaims>;
+
+    fn vw_id_token_verifier(&self) -> CoreIdTokenVerifier<'_>;
 }
 
 #[rocket::async_trait]
@@ -105,13 +188,42 @@ impl CoreClientExt for CoreClient {
             Ok(user_info) => Ok(user_info),
         }
     }
+
+    fn vw_id_token_verifier(&self) -> CoreIdTokenVerifier<'_> {
+        let mut verifier = self.id_token_verifier();
+        if let Some(regex_str) = CONFIG.sso_audience_trusted() {
+            match Regex::new(&regex_str) {
+                Ok(regex) => {
+                    verifier = verifier.set_other_audience_verifier_fn(move |aud| regex.is_match(aud));
+                }
+                Err(err) => {
+                    error!("Failed to parse SSO_AUDIENCE_TRUSTED={regex_str} regex: {err}");
+                }
+            }
+        }
+        verifier
+    }
 }
 
 // The `nonce` allow to protect against replay attacks
-pub async fn authorize_url(mut conn: DbConn, state: String) -> ApiResult<Url> {
+// redirect_uri from: https://github.com/bitwarden/server/blob/main/src/Identity/IdentityServer/ApiClient.cs
+pub async fn authorize_url(state: String, client_id: &str, raw_redirect_uri: &str, mut conn: DbConn) -> ApiResult<Url> {
     let scopes = CONFIG.sso_scopes_vec().into_iter().map(Scope::new);
 
-    let (auth_url, _csrf_state, nonce) = CoreClient::cached()
+    let redirect_uri = match client_id {
+        "web" | "browser" => format!("{}/sso-connector.html", CONFIG.domain()),
+        "desktop" | "mobile" => "bitwarden://sso-callback".to_string(),
+        "cli" => {
+            let port_regex = Regex::new(r"^http://localhost:([0-9]{4})$").unwrap();
+            match port_regex.captures(raw_redirect_uri).and_then(|captures| captures.get(1).map(|c| c.as_str())) {
+                Some(port) => format!("http://localhost:{}", port),
+                None => err!("Failed to extract port number"),
+            }
+        }
+        _ => err!(format!("Unsupported client {client_id}")),
+    };
+
+    let (auth_url, csrf_state, nonce) = CoreClient::cached()
         .await?
         .authorize_url(
             AuthenticationFlow::<CoreResponseType>::AuthorizationCode,
@@ -122,35 +234,15 @@ pub async fn authorize_url(mut conn: DbConn, state: String) -> ApiResult<Url> {
         .add_extra_params(CONFIG.sso_authorize_extra_params_vec())
         .url();
 
-    let sso_nonce = SsoNonce::new(nonce.secret().to_string());
+    let sso_nonce = SsoNonce::new(csrf_state.secret().to_string(), nonce.secret().to_string(), redirect_uri);
     sso_nonce.save(&mut conn).await?;
 
     Ok(auth_url)
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct IdTokenPayload {
-    exp: i64,
-    email: Option<String>,
-    nonce: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct BasicTokenPayload {
-    iat: Option<i64>,
-    nbf: Option<i64>,
-    exp: i64,
-}
-
-impl BasicTokenPayload {
-    fn nbf(&self) -> i64 {
-        self.nbf.or(self.iat).unwrap_or_else(|| Utc::now().naive_utc().timestamp())
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct AuthenticatedUser {
-    pub nonce: String,
+    pub state: String,
     pub refresh_token: Option<String>,
     pub access_token: String,
     pub expires_in: Option<Duration>,
@@ -158,117 +250,36 @@ pub struct AuthenticatedUser {
     pub user_name: Option<String>,
 }
 
-struct Decoding {
-    key: DecodingKey,
-    id_validation: Validation,
-    access_validation: Validation,
-    debug_key: DecodingKey,
-    debug_validation: Validation,
-}
-
-impl Decoding {
-    pub fn new(key: DecodingKey, validation: Validation) -> Self {
-        let mut access_validation = validation.clone();
-        access_validation.validate_aud = false;
-
-        let mut debug_validation = insecure_validation();
-        debug_validation.validate_aud = false;
-
-        Decoding {
-            key,
-            id_validation: validation,
-            access_validation,
-            debug_key: DecodingKey::from_secret(&[]),
-            debug_validation,
-        }
-    }
-
-    pub fn decode_id_token<
-        AC: openidconnect::AdditionalClaims,
-        GC: openidconnect::GenderClaim,
-        JE: openidconnect::JweContentEncryptionAlgorithm<JT>,
-        JS: openidconnect::JwsSigningAlgorithm<JT>,
-        JT: openidconnect::JsonWebKeyType,
-    >(
-        &self,
-        oic_id_token: Option<&IdToken<AC, GC, JE, JS, JT>>,
-    ) -> ApiResult<IdTokenPayload> {
-        let id_token_str = match oic_id_token {
-            None => err!("Token response did not contain an id_token"),
-            Some(token) => token.to_string(),
-        };
-
-        match jsonwebtoken::decode::<IdTokenPayload>(id_token_str.as_str(), &self.key, &self.id_validation) {
-            Ok(payload) => Ok(payload.claims),
-            Err(err) => {
-                self.log_decode_debug("identity_token", id_token_str.as_str());
-                err!(format!("Could not decode id token: {err}"))
-            }
-        }
-    }
-
-    pub fn decode_basic_token(&self, token_name: &str, token: &str) -> ApiResult<BasicTokenPayload> {
-        match jsonwebtoken::decode::<BasicTokenPayload>(token, &self.key, &self.access_validation) {
-            Ok(payload) => Ok(payload.claims),
-            Err(err) => {
-                self.log_decode_debug(token_name, token);
-                err_silent!(format!("Could not decode {token_name}: {err}"))
-            }
-        }
-    }
-
-    pub fn log_decode_debug(&self, token_name: &str, token: &str) {
-        let _ = jsonwebtoken::decode::<serde_json::Value>(token, &self.debug_key, &self.debug_validation)
-            .map(|payload| debug!("Token {token_name}: {}", payload.claims));
-    }
-}
-
-fn insecure_validation() -> Validation {
-    let mut validation = jsonwebtoken::Validation::default();
-    validation.set_audience(&[CONFIG.sso_client_id()]);
-    validation.insecure_disable_signature_validation();
-
-    validation
-}
-
-// DecodingKey and Validation used to read the SSO JWT token response
-// If there is no key fallback to reading without validation
-fn prepare_decoding() -> Decoding {
-    let maybe_key = CONFIG.sso_enabled().then_some(()).and_then(|_| match std::fs::read(CONFIG.sso_key_filepath()) {
-        Ok(key) => Some(DecodingKey::from_rsa_pem(&key).unwrap_or_else(|e| {
-            panic!(
-                "Failed to decode optional SSO public RSA Key, format should exactly match:\n\
-                -----BEGIN PUBLIC KEY-----\n\
-                ...\n\
-                -----END PUBLIC KEY-----\n\
-                Error: {e}"
-            );
-        })),
-        Err(err) => {
-            println!("[INFO] Can't read optional SSO public key at {} : {err}", CONFIG.sso_key_filepath());
-            None
-        }
-    });
-
-    match maybe_key {
-        Some(key) => {
-            let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::RS256);
-            validation.leeway = 30; // 30 seconds
-            validation.validate_exp = true;
-            validation.validate_nbf = true;
-            validation.set_audience(&[CONFIG.sso_client_id()]);
-            validation.set_issuer(&[CONFIG.sso_authority()]);
-
-            Decoding::new(key, validation)
-        }
-        None => Decoding::new(DecodingKey::from_secret(&[]), insecure_validation()),
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct UserInformation {
+    pub state: String,
     pub email: String,
     pub user_name: Option<String>,
+}
+
+async fn decode_code_claims(code: &str, conn: &mut DbConn) -> ApiResult<(String, String)> {
+    match auth::decode_jwt::<OIDCCodeClaims>(code, SSO_JWT_ISSUER.to_string()) {
+        Ok(code_claims) => match code_claims.code {
+            OIDCCodeWrapper::Ok {
+                code,
+                state,
+            } => Ok((code, state)),
+            OIDCCodeWrapper::Error {
+                state,
+                error,
+                error_description,
+            } => {
+                if let Err(err) = SsoNonce::delete(&state, conn).await {
+                    error!("Failed to delete database sso_nonce using {state}: {err}")
+                }
+                err!(format!(
+                    "SSO authorization failed: {error}, {}",
+                    error_description.as_ref().unwrap_or(&String::new())
+                ))
+            }
+        },
+        Err(err) => err!(format!("Failed to decode code wrapper: {err}")),
+    }
 }
 
 // During the 2FA flow we will
@@ -276,9 +287,12 @@ pub struct UserInformation {
 //  - second time we will rely on the `AC_CACHE` since the `code` has already been exchanged.
 // The `nonce` will ensure that the user is authorized only once.
 // We return only the `UserInformation` to force calling `redeem` to obtain the `refresh_token`.
-pub async fn exchange_code(code: &String) -> ApiResult<UserInformation> {
-    if let Some(authenticated_user) = AC_CACHE.get(code) {
+pub async fn exchange_code(wrapped_code: &str, conn: &mut DbConn) -> ApiResult<UserInformation> {
+    let (code, state) = decode_code_claims(wrapped_code, conn).await?;
+
+    if let Some(authenticated_user) = AC_CACHE.get(&state) {
         return Ok(UserInformation {
+            state,
             email: authenticated_user.email,
             user_name: authenticated_user.user_name,
         });
@@ -287,14 +301,34 @@ pub async fn exchange_code(code: &String) -> ApiResult<UserInformation> {
     let oidc_code = AuthorizationCode::new(code.clone());
     let client = CoreClient::cached().await?;
 
+    let nonce = match SsoNonce::find(&state, conn).await {
+        None => err!(format!("Invalid state cannot retrieve nonce")),
+        Some(nonce) => nonce,
+    };
+
     match client.exchange_code(oidc_code).request_async(async_http_client).await {
         Ok(token_response) => {
             let user_info = client.user_info_async(token_response.access_token().to_owned()).await?;
+            let oidc_nonce = Nonce::new(nonce.nonce.clone());
 
-            let id_token = SSO_JWT_VALIDATION.decode_id_token(token_response.extra_fields().id_token())?;
+            let id_token = match token_response.extra_fields().id_token() {
+                None => err!("Token response did not contain an id_token"),
+                Some(token) => token,
+            };
 
-            let email = match id_token.email {
-                Some(email) => email,
+            if CONFIG.sso_debug_tokens() {
+                debug!("Id token: {}", id_token.to_string());
+                debug!("Access token: {}", token_response.access_token().secret().to_string());
+                debug!("Refresh token: {:?}", token_response.refresh_token().map(|t| t.secret().to_string()));
+            }
+
+            let id_claims = match id_token.claims(&client.vw_id_token_verifier(), &oidc_nonce) {
+                Err(err) => err!(format!("Could not read id_token claims, {err}")),
+                Ok(claims) => claims,
+            };
+
+            let email = match id_claims.email() {
+                Some(email) => email.to_string(),
                 None => match user_info.email() {
                     None => err!("Neither id token nor userinfo contained an email"),
                     Some(email) => email.to_owned().to_string(),
@@ -309,7 +343,7 @@ pub async fn exchange_code(code: &String) -> ApiResult<UserInformation> {
             }
 
             let authenticated_user = AuthenticatedUser {
-                nonce: id_token.nonce,
+                state: nonce.state,
                 refresh_token,
                 access_token: token_response.access_token().secret().to_string(),
                 expires_in: token_response.expires_in(),
@@ -317,9 +351,10 @@ pub async fn exchange_code(code: &String) -> ApiResult<UserInformation> {
                 user_name: user_name.clone(),
             };
 
-            AC_CACHE.insert(code.clone(), authenticated_user.clone());
+            AC_CACHE.insert(state.clone(), authenticated_user.clone());
 
             Ok(UserInformation {
+                state,
                 email,
                 user_name,
             })
@@ -329,18 +364,14 @@ pub async fn exchange_code(code: &String) -> ApiResult<UserInformation> {
 }
 
 // User has passed 2FA flow we can delete `nonce` and clear the cache.
-pub async fn redeem(code: &String, conn: &mut DbConn) -> ApiResult<AuthenticatedUser> {
-    if let Some(au) = AC_CACHE.get(code) {
-        AC_CACHE.invalidate(code);
+pub async fn redeem(state: &String, conn: &mut DbConn) -> ApiResult<AuthenticatedUser> {
+    if let Err(err) = SsoNonce::delete(state, conn).await {
+        error!("Failed to delete database sso_nonce using {state}: {err}")
+    }
 
-        if let Some(sso_nonce) = SsoNonce::find(&au.nonce, conn).await {
-            match sso_nonce.delete(conn).await {
-                Err(msg) => err!(format!("Failed to delete nonce: {msg}")),
-                Ok(_) => Ok(au),
-            }
-        } else {
-            err!("Failed to retrive nonce from db")
-        }
+    if let Some(au) = AC_CACHE.get(state) {
+        AC_CACHE.invalidate(state);
+        Ok(au)
     } else {
         err!("Failed to retrieve user info from sso cache")
     }
@@ -356,7 +387,7 @@ pub fn create_auth_tokens(
     expires_in: Option<Duration>,
 ) -> ApiResult<auth::AuthTokens> {
     if !CONFIG.sso_auth_only_not_session() {
-        let (ap_nbf, ap_exp) = match (SSO_JWT_VALIDATION.decode_basic_token("access_token", access_token), expires_in) {
+        let (ap_nbf, ap_exp) = match (decode_token_claims("access_token", access_token), expires_in) {
             (Ok(ap), _) => (ap.nbf(), ap.exp),
             (Err(_), Some(exp)) => {
                 let time_now = Utc::now().naive_utc();
@@ -380,7 +411,7 @@ fn _create_auth_tokens(
     access_token: &str,
 ) -> ApiResult<auth::AuthTokens> {
     let (nbf, exp, token) = if let Some(rt) = refresh_token.as_ref() {
-        match SSO_JWT_VALIDATION.decode_basic_token("refresh_token", rt) {
+        match decode_token_claims("refresh_token", rt) {
             Err(_) => {
                 let time_now = Utc::now().naive_utc();
                 let exp = (time_now + *DEFAULT_REFRESH_VALIDITY).timestamp();
