@@ -2,7 +2,7 @@ use chrono::{NaiveDateTime, Utc};
 use num_traits::FromPrimitive;
 use rocket::{
     form::{Form, FromForm},
-    http::{Cookie, CookieJar, Status},
+    http::Status,
     response::Redirect,
     serde::json::Json,
     Route,
@@ -163,7 +163,7 @@ async fn _sso_login(data: ConnectData, user_uuid: &mut Option<String>, conn: &mu
         Some(code) => code,
     };
 
-    let user_infos = sso::exchange_code(code).await?;
+    let user_infos = sso::exchange_code(code, conn).await?;
 
     // Will trigger 2FA flow if needed
     let user_data = match User::find_by_mail(user_infos.email.as_str(), conn).await {
@@ -177,7 +177,7 @@ async fn _sso_login(data: ConnectData, user_uuid: &mut Option<String>, conn: &mu
     };
 
     // We passed 2FA get full user informations
-    let auth_user = sso::redeem(code, conn).await?;
+    let auth_user = sso::redeem(&user_infos.state, conn).await?;
 
     let now = Utc::now().naive_utc();
     let (user, mut device, new_device, twofactor_token) = match user_data {
@@ -784,8 +784,7 @@ fn _prevalidate() -> JsonResult {
 #[get("/sso/prevalidate")]
 fn prevalidate() -> JsonResult {
     if CONFIG.sso_enabled() {
-        let claims = auth::generate_ssotoken_claims();
-        let sso_token = auth::encode_jwt(&claims);
+        let sso_token = sso::encode_ssotoken_claims();
         Ok(Json(json!({
             "token": sso_token,
         })))
@@ -795,15 +794,50 @@ fn prevalidate() -> JsonResult {
 }
 
 #[get("/connect/oidc-signin?<code>&<state>", rank = 1)]
-fn oidcsignin(code: String, state: String, jar: &CookieJar<'_>) -> ApiResult<Redirect> {
-    let redirect_root = jar
-        .get(sso::COOKIE_NAME_REDIRECT)
-        .map(|c| c.value().to_string())
-        .unwrap_or(format!("{}/sso-connector.html", CONFIG.domain()));
+async fn oidcsignin(code: String, state: String, conn: DbConn) -> ApiResult<Redirect> {
+    oidcsignin_redirect(
+        state.clone(),
+        sso::OIDCCodeWrapper::Ok {
+            code,
+            state,
+        },
+        &conn,
+    )
+    .await
+}
 
-    let mut url = match url::Url::parse(&redirect_root) {
-        Err(err) => err!(format!("Failed to parse redirect url ({redirect_root}): {err}")),
+// Bitwarden client appear to only care for code and state so we pipe it through
+// cf: https://github.com/bitwarden/clients/blob/8e46ef1ae5be8b62b0d3d0b9d1b1c62088a04638/libs/angular/src/auth/components/sso.component.ts#L68C11-L68C23)
+#[get("/connect/oidc-signin?<state>&<error>&<error_description>", rank = 2)]
+async fn oidcsignin_error(
+    state: String,
+    error: String,
+    error_description: Option<String>,
+    conn: DbConn,
+) -> ApiResult<Redirect> {
+    oidcsignin_redirect(
+        state.clone(),
+        sso::OIDCCodeWrapper::Error {
+            state,
+            error,
+            error_description,
+        },
+        &conn,
+    )
+    .await
+}
+
+async fn oidcsignin_redirect(state: String, wrapper: sso::OIDCCodeWrapper, conn: &DbConn) -> ApiResult<Redirect> {
+    let code = sso::encode_code_claims(wrapper);
+
+    let nonce = match SsoNonce::find(&state, conn).await {
+        Some(n) => n,
+        None => err!(format!("Failed to retrive redirect_uri with {state}")),
+    };
+
+    let mut url = match url::Url::parse(&nonce.redirect_uri) {
         Ok(url) => url,
+        Err(err) => err!(format!("Failed to parse redirect uri ({}): {err}", nonce.redirect_uri)),
     };
 
     url.query_pairs_mut().append_pair("code", &code).append_pair("state", &state);
@@ -813,18 +847,11 @@ fn oidcsignin(code: String, state: String, jar: &CookieJar<'_>) -> ApiResult<Red
     Ok(Redirect::temporary(String::from(url)))
 }
 
-// No good way to display the error
-// Bitwarden client appear to only care for code and state
-// cf: https://github.com/bitwarden/clients/blob/8e46ef1ae5be8b62b0d3d0b9d1b1c62088a04638/libs/angular/src/auth/components/sso.component.ts#L68C11-L68C23)
-#[get("/connect/oidc-signin?<error>&<error_description>", rank = 2)]
-fn oidcsignin_error(error: String, error_description: Option<String>) -> ApiResult<Redirect> {
-    err!(format!("SSO login failed with {error} and {:?}", error_description))
-}
-
 #[derive(Debug, Clone, Default, FromForm)]
 struct AuthorizeData {
-    #[allow(unused)]
-    client_id: Option<String>,
+    #[field(name = uncased("client_id"))]
+    #[field(name = uncased("clientid"))]
+    client_id: String,
     #[field(name = uncased("redirect_uri"))]
     #[field(name = uncased("redirecturi"))]
     redirect_uri: String,
@@ -848,21 +875,15 @@ struct AuthorizeData {
 
 // The `redirect_uri` will change depending of the client (web, android, ios ..)
 #[get("/connect/authorize?<data..>")]
-async fn authorize(data: AuthorizeData, jar: &CookieJar<'_>, conn: DbConn) -> ApiResult<Redirect> {
+async fn authorize(data: AuthorizeData, conn: DbConn) -> ApiResult<Redirect> {
     let AuthorizeData {
+        client_id,
         redirect_uri,
         state,
         ..
     } = data;
 
-    let cookie = Cookie::build((sso::COOKIE_NAME_REDIRECT.to_string(), redirect_uri))
-        .max_age(rocket::time::Duration::minutes(5))
-        .same_site(rocket::http::SameSite::Lax)
-        .http_only(true);
-
-    jar.add(cookie);
-
-    let auth_url = sso::authorize_url(conn, state).await?;
+    let auth_url = sso::authorize_url(state, &client_id, &redirect_uri, conn).await?;
 
     Ok(Redirect::temporary(String::from(auth_url)))
 }
