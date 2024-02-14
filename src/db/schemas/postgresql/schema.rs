@@ -245,8 +245,11 @@ table! {
 }
 
 table! {
-    sso_nonce (nonce) {
+    sso_nonce (state) {
+        state -> Text,
         nonce -> Text,
+        redirect_uri -> Text,
+        created_at -> Timestamp,
     }
 }
 
