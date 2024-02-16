@@ -107,6 +107,20 @@ Config will look like:
 
  - `SSO_SCOPES="email profile offline_access"`
 
+## Zitadel
+
+To obtain a `refresh_token` to be able to extend session you'll need to add the `offline_access` scope.
+
+Config will look like:
+
+ - `SSO_SCOPES="email profile offline_access"`
+
+Additionnaly Zitadel include the `Project id` and the `Client Id` in the audience of the Id Token.
+For the validation to work you will need to add the `Project Id` as a trusted audience (`Client Id` is trusted by default).
+You can control the trusted audience with the config:
+
+  - `SSO_AUDIENCE_TRUSTED='^${Project Id}$'`
+
 ## Session lifetime
 
 Session lifetime is dependant on refresh token and access token returned after calling your SSO token endpoint (grant type `authorization_code`).

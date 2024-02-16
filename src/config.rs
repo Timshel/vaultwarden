@@ -414,7 +414,9 @@ make_config! {
         /// Auth Request cleanup schedule |> Cron schedule of the job that cleans old auth requests from the auth request.
         /// Defaults to every minute. Set blank to disable this job.
         auth_request_purge_schedule:   String, false,  def,    "30 * * * * *".to_string();
-
+        /// Purge incomplete sso nonce.
+        /// Defaults to daily. Set blank to disable this job.
+        purge_incomplete_sso_nonce: String, false,  def,   "0 20 0 * * *".to_string();
     },
 
     /// General settings
