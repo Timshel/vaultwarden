@@ -103,6 +103,13 @@ Your configuration should look like this:
 * `SSO_CLIENT_ID=${Application (client) ID}`
 * `SSO_CLIENT_SECRET=${Secret Value}`
 
+If you want to leverage role mapping you have to create app roles first as described here: https://learn.microsoft.com/en-us/entra/identity-platform/howto-add-app-roles-in-apps.
+Afterwards you can use these settings to derive the `admin` role from the ID token:
+
+* `SSO_ROLES_ENABLED=true`
+* `SSO_ROLES_DEFAULT_TO_USER=true`
+* `SSO_ROLES_TOKEN_PATH=/roles
+
 ## Authelia
 
 To obtain a `refresh_token` to be able to extend session you'll need to add the `offline_access` scope.
