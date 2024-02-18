@@ -1,4 +1,5 @@
 use chrono::{NaiveDateTime, Utc};
+use data_encoding::{BASE64, BASE64URL};
 
 use crate::crypto;
 use core::fmt;
@@ -30,7 +31,6 @@ db_object! {
 impl Device {
     pub fn new(uuid: String, user_uuid: String, name: String, atype: i32) -> Self {
         let now = Utc::now().naive_utc();
-        use data_encoding::BASE64URL;
 
         Self {
             uuid,
@@ -48,8 +48,11 @@ impl Device {
         }
     }
 
+    pub fn roll_refresh_token(&mut self) {
+        self.refresh_token = crypto::encode_random_bytes::<64>(BASE64URL)
+    }
+
     pub fn refresh_twofactor_remember(&mut self) -> String {
-        use data_encoding::BASE64;
         let twofactor_remember = crypto::encode_random_bytes::<180>(BASE64);
         self.twofactor_remember = Some(twofactor_remember.clone());
 
