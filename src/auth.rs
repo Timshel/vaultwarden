@@ -20,7 +20,7 @@ use crate::{
 
 const JWT_ALGORITHM: Algorithm = Algorithm::RS256;
 
-pub static DEFAULT_REFRESH_VALIDITY: Lazy<Duration> = Lazy::new(|| Duration::days(356));
+pub static DEFAULT_REFRESH_VALIDITY: Lazy<Duration> = Lazy::new(|| Duration::days(7));
 pub static DEFAULT_ACCESS_VALIDITY: Lazy<Duration> = Lazy::new(|| Duration::hours(2));
 static JWT_HEADER: Lazy<Header> = Lazy::new(|| Header::new(JWT_ALGORITHM));
 
@@ -1040,10 +1040,14 @@ pub async fn refresh_tokens(refresh_token: &str, conn: &mut DbConn) -> ApiResult
     };
 
     // Get device by refresh token
-    let device = match Device::find_by_refresh_token(&refresh_claims.device_token, conn).await {
+    let mut device = match Device::find_by_refresh_token(&refresh_claims.device_token, conn).await {
         None => err!("Invalid refresh token"),
         Some(device) => device,
     };
+
+    // Roll the Device.refresh_token this way it invalides old JWT refresh_token
+    device.roll_refresh_token();
+    device.save(conn).await?;
 
     let user = match User::find_by_uuid(&device.user_uuid, conn).await {
         None => err!("Impossible to find user"),
