@@ -33,12 +33,17 @@ The callback url is : `https://your.domain/identity/connect/oidc-signin`
 Default access token lifetime might be only `5min`, set a longer value otherwise it will collide with `VaultWarden` front-end expiration detection which is also set at `5min`.
 \
 Set `Realm settings / Session / SSO Session Idle` to at least `10min` (`accessTokenLifespan` setting when using `kcadm.sh`).
+Refresh token lifetime can be contolled with `Realm settings / Sessions / SSO Session Max`.
 
 Server configuration, nothing specific just set:
 
 - `SSO_AUTHORITY=https://${domain}/realms/${realm_name}`
 - `SSO_CLIENT_ID`
 - `SSO_CLIENT_SECRET`
+
+### Testing
+
+If you want to run a testing instance of Keycloak a [docker-compose](docker/keycloak/docker-compose.yml) is available.
 
 ## Authentik
 
