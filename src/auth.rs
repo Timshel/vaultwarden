@@ -1,6 +1,6 @@
 // JWT Handling
 //
-use chrono::{Duration, Utc};
+use chrono::{Duration, NaiveDateTime, Utc};
 use num_traits::FromPrimitive;
 use once_cell::sync::Lazy;
 
@@ -19,6 +19,9 @@ use crate::{
 };
 
 const JWT_ALGORITHM: Algorithm = Algorithm::RS256;
+
+// Limit when BitWarden consider the token as expired
+pub static BW_EXPIRATION: Lazy<chrono::Duration> = Lazy::new(|| chrono::Duration::minutes(5));
 
 pub static DEFAULT_REFRESH_VALIDITY: Lazy<Duration> = Lazy::new(|| Duration::days(7));
 pub static DEFAULT_ACCESS_VALIDITY: Lazy<Duration> = Lazy::new(|| Duration::hours(2));
@@ -154,7 +157,7 @@ pub struct LoginJwtClaims {
 }
 
 impl LoginJwtClaims {
-    pub fn new(device: &Device, user: &User, nbf: i64, exp: i64, scope: Vec<String>) -> Self {
+    pub fn new(device: &Device, user: &User, nbf: i64, exp: i64, scope: Vec<String>, now: NaiveDateTime) -> Self {
         // ---
         // Disabled these keys to be added to the JWT since they could cause the JWT to get too large
         // Also These key/value pairs are not used anywhere by either Vaultwarden or Bitwarden Clients
@@ -166,6 +169,10 @@ impl LoginJwtClaims {
         // let orgadmin: Vec<_> = orgs.iter().filter(|o| o.atype == 1).map(|o| o.org_uuid.clone()).collect();
         // let orguser: Vec<_> = orgs.iter().filter(|o| o.atype == 2).map(|o| o.org_uuid.clone()).collect();
         // let orgmanager: Vec<_> = orgs.iter().filter(|o| o.atype == 3).map(|o| o.org_uuid.clone()).collect();
+
+        if exp <= (now + *BW_EXPIRATION).timestamp() {
+            warn!("Raise access_token lifetime to more than 5min.")
+        }
 
         // Create the JWT claims struct, to send to the client
         Self {
@@ -203,6 +210,7 @@ impl LoginJwtClaims {
             time_now.timestamp(),
             (time_now + *DEFAULT_ACCESS_VALIDITY).timestamp(),
             auth_method.scope_vec(),
+            time_now,
         )
     }
 
