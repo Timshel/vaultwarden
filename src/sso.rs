@@ -18,7 +18,7 @@ use openidconnect::{
 use crate::{
     api::ApiResult,
     auth,
-    auth::{AuthMethod, AuthMethodScope, AuthTokens, TokenWrapper, DEFAULT_REFRESH_VALIDITY},
+    auth::{AuthMethod, AuthMethodScope, AuthTokens, TokenWrapper, BW_EXPIRATION, DEFAULT_REFRESH_VALIDITY},
     db::{
         models::{Device, SsoNonce, User},
         DbConn,
@@ -30,8 +30,6 @@ static AC_CACHE: Lazy<Cache<String, AuthenticatedUser>> =
     Lazy::new(|| Cache::builder().max_capacity(1000).time_to_live(Duration::from_secs(10 * 60)).build());
 
 static SSO_JWT_ISSUER: Lazy<String> = Lazy::new(|| format!("{}|sso", CONFIG.domain_origin()));
-
-static DEFAULT_BW_EXPIRATION: Lazy<chrono::Duration> = Lazy::new(|| chrono::Duration::minutes(5));
 
 pub static NONCE_EXPIRATION: Lazy<chrono::Duration> = Lazy::new(|| chrono::Duration::minutes(10));
 
@@ -303,6 +301,7 @@ pub async fn exchange_code(wrapped_code: &str, conn: &mut DbConn) -> ApiResult<U
                 debug!("Id token: {}", id_token.to_string());
                 debug!("Access token: {}", token_response.access_token().secret().to_string());
                 debug!("Refresh token: {:?}", token_response.refresh_token().map(|t| t.secret().to_string()));
+                debug!("Expiration time: {:?}", token_response.expires_in());
             }
 
             let id_claims = match id_token.claims(&client.vw_id_token_verifier(), &oidc_nonce) {
@@ -370,16 +369,16 @@ pub fn create_auth_tokens(
     expires_in: Option<Duration>,
 ) -> ApiResult<auth::AuthTokens> {
     if !CONFIG.sso_auth_only_not_session() {
+        let now = Utc::now().naive_utc();
+
         let (ap_nbf, ap_exp) = match (decode_token_claims("access_token", access_token), expires_in) {
             (Ok(ap), _) => (ap.nbf(), ap.exp),
-            (Err(_), Some(exp)) => {
-                let time_now = Utc::now().naive_utc();
-                (time_now.timestamp(), (time_now + exp).timestamp())
-            }
+            (Err(_), Some(exp)) => (now.timestamp(), (now + exp).timestamp()),
             _ => err!("Non jwt access_token and empty expires_in"),
         };
 
-        let access_claims = auth::LoginJwtClaims::new(device, user, ap_nbf, ap_exp, auth::AuthMethod::Sso.scope_vec());
+        let access_claims =
+            auth::LoginJwtClaims::new(device, user, ap_nbf, ap_exp, auth::AuthMethod::Sso.scope_vec(), now);
 
         _create_auth_tokens(device, refresh_token, access_claims, access_token)
     } else {
@@ -461,7 +460,7 @@ pub async fn exchange_refresh_token(
         }
         Some(TokenWrapper::Access(access_token)) => {
             let now = Utc::now().naive_utc();
-            let exp_limit = (now + *DEFAULT_BW_EXPIRATION).timestamp();
+            let exp_limit = (now + *BW_EXPIRATION).timestamp();
 
             if refresh_claims.exp < exp_limit {
                 err_silent!("Access token is close to expiration but we have no refresh token")
@@ -479,6 +478,7 @@ pub async fn exchange_refresh_token(
                         now.timestamp(),
                         refresh_claims.exp,
                         auth::AuthMethod::Sso.scope_vec(),
+                        now,
                     );
                     _create_auth_tokens(device, None, access_claims, access_token)
                 }
