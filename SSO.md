@@ -19,6 +19,7 @@ The following configurations are available
  	- $SSO_AUTHORITY/.well-known/openid-configuration should return the a json document: https://openid.net/specs/openid-connect-discovery-1_0.html#ProviderConfigurationResponse
  - `SSO_SCOPES` : Optional, allow to override scopes if needed (default `"email profile"`)
  - `SSO_AUTHORIZE_EXTRA_PARAMS` : Optional, allow to add extra parameter to the authorize redirection (default `""`)
+ - `SSO_PKCE`: Activate PKCE for the Auth Code flow. Recommended but disabled for now waiting for feedback on support (default `false`).
  - `SSO_AUDIENCE_TRUSTED`: Optional, Regex to trust additionnal audience for the IdToken (`client_id` is always trusted). Use single quote when writing the regex: `'^$'`.
  - `SSO_CLIENT_ID` : Client Id
  - `SSO_CLIENT_SECRET` : Client Secret
@@ -40,10 +41,20 @@ Server configuration, nothing specific just set:
 - `SSO_AUTHORITY=https://${domain}/realms/${realm_name}`
 - `SSO_CLIENT_ID`
 - `SSO_CLIENT_SECRET`
+- `SSO_PKCE=true`
 
 ### Testing
 
 If you want to run a testing instance of Keycloak a [docker-compose](docker/keycloak/docker-compose.yml) is available.
+
+## Authelia
+
+To obtain a `refresh_token` to be able to extend session you'll need to add the `offline_access` scope.
+
+Config will look like:
+
+ - `SSO_SCOPES="email profile offline_access"`
+
 
 ## Authentik
 
@@ -54,6 +65,7 @@ Server configuration, nothing specific just set:
 - `SSO_AUTHORITY=https://${domain}/application/o/${application_name}/` : trailing `/` is important
 - `SSO_CLIENT_ID`
 - `SSO_CLIENT_SECRET`
+- `SSO_PKCE=true`
 
 ## GitLab
 
@@ -68,6 +80,7 @@ Then configure your server with
  - `SSO_AUTHORITY=https://gitlab.com`
  - `SSO_CLIENT_ID`
  - `SSO_CLIENT_SECRET`
+ - `SSO_PKCE=true`
 
 ## Google Auth
 
@@ -84,8 +97,19 @@ Configure your server with :
 	  prompt=consent
 	  "
 	  ```
+	- `SSO_PKCE=true`
   - `SSO_CLIENT_ID`
   - `SSO_CLIENT_SECRET`
+
+## Kanidm
+
+Kanidm recommend always running with PKCE:
+
+Config will look like:
+
+ - `SSO_PKCE=true`
+
+Otherwise you can disable the PKCE requirement with: `kanidm system oauth2 warning-insecure-client-disable-pkce CLIENT_NAME --name admin`.
 
 ## Microsoft Entra ID
 
@@ -104,27 +128,24 @@ Your configuration should look like this:
 * `SSO_CLIENT_ID=${Application (client) ID}`
 * `SSO_CLIENT_SECRET=${Secret Value}`
 
-## Authelia
-
-To obtain a `refresh_token` to be able to extend session you'll need to add the `offline_access` scope.
-
-Config will look like:
-
- - `SSO_SCOPES="email profile offline_access"`
-
 ## Zitadel
 
 To obtain a `refresh_token` to be able to extend session you'll need to add the `offline_access` scope.
-
-Config will look like:
-
- - `SSO_SCOPES="email profile offline_access"`
 
 Additionnaly Zitadel include the `Project id` and the `Client Id` in the audience of the Id Token.
 For the validation to work you will need to add the `Project Id` as a trusted audience (`Client Id` is trusted by default).
 You can control the trusted audience with the config:
 
+It appears it's not possible to use PKCE with confidential client so it needs to be disabled.
+
+Config will look like:
+
+	- `SSO_AUTHORITY=https://${provider_host}`
+	- `SSO_SCOPES="email profile offline_access"`
+	- `SSO_CLIENT_ID`
+	- `SSO_CLIENT_SECRET`
   - `SSO_AUDIENCE_TRUSTED='^${Project Id}$'`
+  - `SSO_PKCE=false`
 
 ## Session lifetime
 

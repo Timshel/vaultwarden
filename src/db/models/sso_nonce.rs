@@ -12,6 +12,7 @@ db_object! {
     pub struct SsoNonce {
         pub state: String,
         pub nonce: String,
+        pub verifier: Option<String>,
         pub redirect_uri: String,
         pub created_at: NaiveDateTime,
     }
@@ -19,12 +20,13 @@ db_object! {
 
 /// Local methods
 impl SsoNonce {
-    pub fn new(state: String, nonce: String, redirect_uri: String) -> Self {
+    pub fn new(state: String, nonce: String, verifier: Option<String>, redirect_uri: String) -> Self {
         let now = Utc::now().naive_utc();
 
         SsoNonce {
             state,
             nonce,
+            verifier,
             redirect_uri,
             created_at: now,
         }

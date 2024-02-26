@@ -13,7 +13,8 @@ use openidconnect::core::{
 use openidconnect::reqwest::async_http_client;
 use openidconnect::{
     AccessToken, AuthDisplay, AuthPrompt, AuthenticationFlow, AuthorizationCode, AuthorizationRequest, ClientId,
-    ClientSecret, CsrfToken, Nonce, OAuth2TokenResponse, RefreshToken, ResponseType, Scope,
+    ClientSecret, CsrfToken, Nonce, OAuth2TokenResponse, PkceCodeChallenge, PkceCodeVerifier, RefreshToken,
+    ResponseType, Scope,
 };
 
 use crate::{
@@ -221,18 +222,27 @@ pub async fn authorize_url(state: String, client_id: &str, raw_redirect_uri: &st
         _ => err!(format!("Unsupported client {client_id}")),
     };
 
-    let (auth_url, csrf_state, nonce) = CoreClient::cached()
-        .await?
+    let client = CoreClient::cached().await?;
+    let mut auth_req = client
         .authorize_url(
             AuthenticationFlow::<CoreResponseType>::AuthorizationCode,
             || CsrfToken::new(state),
             Nonce::new_random,
         )
         .add_scopes(scopes)
-        .add_extra_params(CONFIG.sso_authorize_extra_params_vec())
-        .url();
+        .add_extra_params(CONFIG.sso_authorize_extra_params_vec());
 
-    let sso_nonce = SsoNonce::new(csrf_state.secret().to_string(), nonce.secret().to_string(), redirect_uri);
+    let verifier = if CONFIG.sso_pkce() {
+        let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
+        auth_req = auth_req.set_pkce_challenge(pkce_challenge);
+        Some(pkce_verifier.secret().to_string())
+    } else {
+        None
+    };
+
+    let (auth_url, csrf_state, nonce) = auth_req.url();
+
+    let sso_nonce = SsoNonce::new(csrf_state.secret().to_string(), nonce.secret().to_string(), verifier, redirect_uri);
     sso_nonce.save(&mut conn).await?;
 
     Ok(auth_url)
@@ -304,7 +314,16 @@ pub async fn exchange_code(wrapped_code: &str, conn: &mut DbConn) -> ApiResult<U
         Some(nonce) => nonce,
     };
 
-    match client.exchange_code(oidc_code).request_async(async_http_client).await {
+    let mut exchange = client.exchange_code(oidc_code);
+
+    if CONFIG.sso_pkce() {
+        match nonce.verifier {
+            None => err!(format!("Missing verifier in the DB nonce table")),
+            Some(secret) => exchange = exchange.set_pkce_verifier(PkceCodeVerifier::new(secret)),
+        }
+    }
+
+    match exchange.request_async(async_http_client).await {
         Ok(token_response) => {
             let user_info = client.user_info_async(token_response.access_token().to_owned()).await?;
             let oidc_nonce = Nonce::new(nonce.nonce.clone());

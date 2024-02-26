@@ -629,6 +629,8 @@ make_config! {
         sso_scopes:                     String, false,  def,   "email profile".to_string();
         /// Additionnal authorization url parameters
         sso_authorize_extra_params:     String, false,  def,    String::new();
+        /// Control PKCE activation
+        sso_pkce:                       bool,   true,   def,    false;
         /// Regex to add additionnal trusted audience to Id Token
         sso_audience_trusted:           String, false,  option;
         /// CallBack Path

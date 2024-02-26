@@ -248,6 +248,7 @@ table! {
     sso_nonce (state) {
         state -> Text,
         nonce -> Text,
+        verifier -> Nullable<Text>,
         redirect_uri -> Text,
         created_at -> Timestamp,
     }
