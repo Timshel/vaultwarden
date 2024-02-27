@@ -25,9 +25,34 @@ The following configurations are available
  - `SSO_CLIENT_SECRET` : Client Secret
  - `SSO_MASTER_PASSWORD_POLICY`: Optional Master password policy
  - `SSO_AUTH_ONLY_NOT_SESSION`: Enable to use SSO only for authentication not session lifecycle
+ - `SSO_CLIENT_CACHE_EXPIRATION`: Cache calls to the discovery endpoint, duration in seconds, `0` to disable (default `0`);
  - `SSO_DEBUG_TOKENS`: Log all tokens for easier debugging (default `false`)
 
 The callback url is : `https://your.domain/identity/connect/oidc-signin`
+
+## Client Cache
+
+By default the client cache is disabled since it can cause issues with the signing keys.
+\
+This mean that the discovery endpoint will be called again each time we need to interact with the provider (generating authorize_url, exhange the authorize code, refresh tokens).
+This is suboptimal so the `SSO_CLIENT_CACHE_EXPIRATION` allow you to configure an expiration that should work for your provider.
+
+As a protection against a misconfigured expiration if the validation of the `IdToken` fails then the client cache is invalidated (but you'll periodically have an unlucky user ^^).
+
+### Google example (Rolling keys)
+
+If we take Google as an example checking the discovery [endpoint](https://accounts.google.com/.well-known/openid-configuration) response headers we can see that the `max-age` of the cache control is set to `3600` seconds. And the [jwk_uri](https://www.googleapis.com/oauth2/v3/certs) response headers usually contain a `max-age` with an even bigger value.
+/
+Combined with user [feedback](https://github.com/ramosbugs/openidconnect-rs/issues/152) we can conclude that Google will roll the signing keys each week.
+
+Setting the cache expiration too high has diminishing return but using something like `600` (10 min) should provide plenty benefits.
+
+### Rolling keys manually
+
+If you want to roll the used key, first add a new one but do not immediately start signing with it.
+Wait for the delay you configured in `SSO_CLIENT_CACHE_EXPIRATION` then you can start signing with it.
+
+As mentionned in the Google example setting too high of a value has dimishing return even if you do not plan to roll the keys.
 
 ## Keycloak
 
