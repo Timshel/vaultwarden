@@ -859,7 +859,11 @@ async fn oidcsignin_redirect(state: String, wrapper: sso::OIDCCodeWrapper, conn:
         Err(err) => err!(format!("Failed to parse redirect uri ({}): {err}", nonce.redirect_uri)),
     };
 
-    url.query_pairs_mut().append_pair("code", &code).append_pair("state", &state);
+    url.query_pairs_mut()
+        .append_pair("code", &code)
+        .append_pair("state", &state)
+        .append_pair("scope", &AuthMethod::Sso.scope())
+        .append_pair("iss", &CONFIG.domain());
 
     debug!("Redirection to {url}");
 
