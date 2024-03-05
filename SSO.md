@@ -58,8 +58,11 @@ As mentionned in the Google example setting too high of a value has dimishing re
 
 Default access token lifetime might be only `5min`, set a longer value otherwise it will collide with `VaultWarden` front-end expiration detection which is also set at `5min`.
 \
-Set `Realm settings / Session / SSO Session Idle` to at least `10min` (`accessTokenLifespan` setting when using `kcadm.sh`).
-Refresh token lifetime can be contolled with `Realm settings / Sessions / SSO Session Max`.
+At the realm level
+- `Realm settings / Tokens / Access Token Lifespan` to at least `10min` (`accessTokenLifespan` setting when using `kcadm.sh`).
+- `Realm settings / Sessions / SSO Session Idle/Max` for the Refresh token lifetime
+
+Or for a specific client in `Clients / Client details / Advanced / Advanced settings` you can find `Access Token Lifespan` and `Client Session Idle/Max`.
 
 Server configuration, nothing specific just set:
 
@@ -84,6 +87,8 @@ Config will look like:
 ## Authentik
 
 Default access token lifetime might be only `5min`, set a longer value otherwise it will collide with `VaultWarden` front-end expiration detection which is also set at `5min`.
+\
+To change the tokens expiration go to `Applications / Providers / Edit / Advanced protocol settings`.
 
 Server configuration, nothing specific just set:
 
