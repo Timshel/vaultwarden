@@ -617,26 +617,26 @@ make_config! {
     sso {
         /// Enabled
         sso_enabled:                    bool,   true,   def,    false;
-        /// Force SSO login
+        /// Disable Email+Master Password login
         sso_only:                       bool,   true,   def,    false;
         /// Client ID
-        sso_client_id:                  String, true,   def,    String::new();
+        sso_client_id:                  String, false,   def,    String::new();
         /// Client Key
-        sso_client_secret:              Pass,   true,   def,    String::new();
+        sso_client_secret:              Pass,   false,   def,    String::new();
         /// Authority Server
-        sso_authority:                  String, true,   def,    String::new();
+        sso_authority:                  String, false,   def,    String::new();
         /// Scopes required for authorize
         sso_scopes:                     String, false,  def,   "email profile".to_string();
         /// Additionnal authorization url parameters
         sso_authorize_extra_params:     String, false,  def,    String::new();
-        /// Control PKCE activation
-        sso_pkce:                       bool,   true,   def,    false;
-        /// Regex to add additionnal trusted audience to Id Token
+        /// Use PKCE during Auth Code flow
+        sso_pkce:                       bool,   false,   def,    false;
+        /// Regex for additionnal trusted Id token audience
         sso_audience_trusted:           String, false,  option;
         /// CallBack Path
         sso_callback_path:              String, false,  gen,    |c| generate_sso_callback_path(&c.domain);
         /// Optional sso master password policy
-        sso_master_password_policy:     String, false,  option;
+        sso_master_password_policy:     String, true,  option;
         /// Use sso only for auth not the session lifecycle
         sso_auth_only_not_session:      bool,   true,   def,    false;
         /// Client cache for discovery endpoint. Duration in seconds (0 or less to disable).
