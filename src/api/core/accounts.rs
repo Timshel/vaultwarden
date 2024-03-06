@@ -162,10 +162,7 @@ pub async fn _register(data: JsonUpcase<RegisterData>, mut conn: DbConn) -> Json
                     err!("Registration email does not match invite email")
                 }
             } else if Invitation::take(&email, &mut conn).await {
-                for user_org in UserOrganization::find_invited_by_user(&user.uuid, &mut conn).await.iter_mut() {
-                    user_org.status = UserOrgStatus::Accepted as i32;
-                    user_org.save(&mut conn).await?;
-                }
+                UserOrganization::confirm_user_invitations(&user.uuid, &mut conn).await?;
                 user
             } else if CONFIG.is_signup_allowed(&email)
                 || EmergencyAccess::find_invited_by_grantee_email(&email, &mut conn).await.is_some()

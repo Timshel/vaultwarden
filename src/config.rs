@@ -619,6 +619,8 @@ make_config! {
         sso_enabled:                    bool,   true,   def,    false;
         /// Disable Email+Master Password login
         sso_only:                       bool,   true,   def,    false;
+        /// Associate existing user based on email
+        sso_signups_match_email:        bool,   true,   def,    true;
         /// Client ID
         sso_client_id:                  String, false,   def,    String::new();
         /// Client Key
@@ -1419,6 +1421,7 @@ where
     reg!("email/send_single_org_removed_from_org", ".html");
     reg!("email/set_password", ".html");
     reg!("email/smtp_test", ".html");
+    reg!("email/sso_change_email", ".html");
     reg!("email/twofactor_email", ".html");
     reg!("email/verify_email", ".html");
     reg!("email/welcome_must_verify", ".html");

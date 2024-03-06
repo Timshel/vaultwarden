@@ -14,6 +14,7 @@ The following configurations are available
 
  - `SSO_ENABLED` : Activate the SSO
  - `SSO_ONLY` : disable email+Master password authentication
+ - `SSO_SIGNUPS_MATCH_EMAIL`: On SSO Signup if a user with a matching email already exists make the association (default `true`)
  - `SSO_AUTHORITY` : the OpendID Connect Discovery endpoint of your SSO
  	- Should not include the `/.well-known/openid-configuration` part and no trailing `/`
  	- $SSO_AUTHORITY/.well-known/openid-configuration should return the a json document: https://openid.net/specs/openid-connect-discovery-1_0.html#ProviderConfigurationResponse
@@ -29,6 +30,24 @@ The following configurations are available
  - `SSO_DEBUG_TOKENS`: Log all tokens for easier debugging (default `false`)
 
 The callback url is : `https://your.domain/identity/connect/oidc-signin`
+
+## Account and Email handling
+
+When logging with SSO an identifier (`{iss}/{sub}` claims from the IdToken) is saved in a separate table (`sso_users`).
+This is used to link to the SSO provider identifier without changing the default Vaultwarden user `uuid`. This is needed because:
+
+ - Storing the SSO identifier is important to prevent account takeover due to email change.
+ - We can't use the identifier as the User uuid since it's way longer (Max 255 chars for the `sub` part, cf [spec](https://openid.net/specs/openid-connect-core-1_0.html#CodeIDToken)).
+ - We want to be able to associate existing account based on `email` but only when the user log for the first time (controlled by `SSO_SIGNUPS_MATCH_EMAIL`).
+ - We need to be able to associate with existing stub account, such as the one created when inviting a user to an org (association is possible only if the user does not have a private key).
+
+Additionnaly:
+
+ - Signup to Vaultwarden will be blocked if the Provider report the email as `unverified`.
+ - Changing the email need to be done by the user since it require updating the `key`.
+ 	 On login if the email returned by the provider is not the one saved in Vaultwarden an email will be sent to the user to ask him to update it.
+ - If set `SIGNUPS_DOMAINS_WHITELIST` is applied on SSO signup and when attempting to change the email.
+
 
 ## Client Cache
 

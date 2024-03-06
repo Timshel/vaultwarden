@@ -259,14 +259,18 @@ pub struct AuthenticatedUser {
     pub refresh_token: Option<String>,
     pub access_token: String,
     pub expires_in: Option<Duration>,
+    pub identifier: String,
     pub email: String,
+    pub email_verified: Option<bool>,
     pub user_name: Option<String>,
 }
 
 #[derive(Clone, Debug)]
 pub struct UserInformation {
     pub state: String,
+    pub identifier: String,
     pub email: String,
+    pub email_verified: Option<bool>,
     pub user_name: Option<String>,
 }
 
@@ -306,7 +310,9 @@ pub async fn exchange_code(wrapped_code: &str, conn: &mut DbConn) -> ApiResult<U
     if let Some(authenticated_user) = AC_CACHE.get(&state) {
         return Ok(UserInformation {
             state,
+            identifier: authenticated_user.identifier,
             email: authenticated_user.email,
+            email_verified: authenticated_user.email_verified,
             user_name: authenticated_user.user_name,
         });
     }
@@ -370,12 +376,16 @@ pub async fn exchange_code(wrapped_code: &str, conn: &mut DbConn) -> ApiResult<U
                 error!("Scope offline_access is present but response contain no refresh_token");
             }
 
+            let identifier = format!("{}/{}", **id_claims.issuer(), **id_claims.subject());
+
             let authenticated_user = AuthenticatedUser {
                 state: nonce.state,
                 refresh_token,
                 access_token: token_response.access_token().secret().to_string(),
                 expires_in: token_response.expires_in(),
+                identifier: identifier.clone(),
                 email: email.clone(),
+                email_verified: id_claims.email_verified(),
                 user_name: user_name.clone(),
             };
 
@@ -383,7 +393,9 @@ pub async fn exchange_code(wrapped_code: &str, conn: &mut DbConn) -> ApiResult<U
 
             Ok(UserInformation {
                 state,
+                identifier,
                 email,
+                email_verified: id_claims.email_verified(),
                 user_name,
             })
         }

@@ -41,7 +41,7 @@ impl SsoNonce {
                 diesel::replace_into(sso_nonce::table)
                     .values(SsoNonceDb::to_db(self))
                     .execute(conn)
-                    .map_res("Error saving SSO device")
+                    .map_res("Error saving SSO nonce")
             }
             postgresql {
                 let value = SsoNonceDb::to_db(self);
