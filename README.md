@@ -50,6 +50,11 @@ This feature is controlled with the following conf:
 - `SSO_ORGANIZATIONS_ID_MAPPING`: Optional, allow to map provider group to a Vaultwarden organization `uuid` (default `""`, format: `"ProviderId:VaultwardenId;"`)
 
 
+### Experimental Version
+
+Made a version which allow to run the server without storing the master password (it's still required just not sent to the server).
+It´s experimental, more information in [timshel/experimental](https://github.com/Timshel/vaultwarden/tree/experimental).
+
 ## Docker
 
 Change the docker files to package both front-end from [Timshel/oidc_web_builds](https://github.com/Timshel/oidc_web_builds/releases).
