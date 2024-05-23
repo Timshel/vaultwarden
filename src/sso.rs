@@ -156,6 +156,37 @@ trait CoreClientExt {
     fn vw_id_token_verifier(&self) -> CoreIdTokenVerifier<'_>;
 }
 
+
+use openidconnect::{HttpRequest, HttpResponse};
+
+pub async fn async_http_client_allow_redirect(
+    request: HttpRequest,
+) -> Result<HttpResponse, openidconnect::reqwest::Error<oic_reqwest::Error>> {
+    let client = oic_reqwest::Client::new();
+
+    let mut request_builder = client
+        .request(request.method, request.url.as_str())
+        .body(request.body);
+
+    for (name, value) in &request.headers {
+        request_builder = request_builder.header(name.as_str(), value.as_bytes());
+    }
+    let request = request_builder.build().map_err(openidconnect::reqwest::Error::Reqwest)?;
+
+    let response = client.execute(request).await.map_err(openidconnect::reqwest::Error::Reqwest)?;
+
+    let status_code = response.status();
+    let headers = response.headers().to_owned();
+    let chunks = response.bytes().await.map_err(openidconnect::reqwest::Error::Reqwest)?;
+
+    Ok(HttpResponse {
+        status_code,
+        headers,
+        body: chunks.to_vec(),
+    })
+}
+
+
 #[rocket::async_trait]
 impl CoreClientExt for CoreClient {
     // Call the OpenId discovery endpoint to retrieve configuration
@@ -165,7 +196,7 @@ impl CoreClientExt for CoreClient {
 
         let issuer_url = CONFIG.sso_issuer_url()?;
 
-        let provider_metadata = match CoreProviderMetadata::discover_async(issuer_url, async_http_client).await {
+        let provider_metadata = match CoreProviderMetadata::discover_async(issuer_url, async_http_client_allow_redirect).await {
             Err(err) => err!(format!("Failed to discover OpenID provider: {err}")),
             Ok(metadata) => metadata,
         };
