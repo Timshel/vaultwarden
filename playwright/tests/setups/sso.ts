@@ -10,15 +10,20 @@ export async function logNewUser(
     test: Test,
     page: Page,
     user: { email: string, name: string, password: string },
-    options: { mailBuffer?: MailBuffer, mailServer?: MailServer } = {}
+    options: { mailBuffer?: MailBuffer, mailServer?: MailServer, override?: boolean } = {}
 ) {
     let mailBuffer = options.mailBuffer ?? options.mailServer?.buffer(user.email);
     try {
         await test.step('Create user', async () => {
             await test.step('Landing page', async () => {
                 await page.goto('/');
-                await page.getByLabel(/Email address/).fill(user.email);
-                await page.getByRole('button', { name: /Use single sign-on/ }).click();
+
+                if( options.override ) {
+                    await page.getByRole('button', { name: 'Continue'}).click();
+                } else {
+                    await page.getByLabel(/Email address/).fill(user.email);
+                    await page.getByRole('button', { name: /Use single sign-on/ }).click();
+                }
             });
 
             await test.step('Keycloak login', async () => {
@@ -61,15 +66,20 @@ export async function logUser(
     test: Test,
     page: Page,
     user: { email: string, password: string },
-    options: { mailBuffer ?: MailBuffer, mailServer?: MailServer} = {}
+    options: { mailBuffer ?: MailBuffer, mailServer?: MailServer, override?: boolean } = {}
 ) {
     let mailBuffer = options.mailBuffer ?? options.mailServer?.buffer(user.email);
     try {
         await test.step('Log user', async () => {
             await test.step('Landing page', async () => {
                 await page.goto('/');
-                await page.getByLabel(/Email address/).fill(user.email);
-                await page.getByRole('button', { name: /Use single sign-on/ }).click();
+
+                if( options.override ) {
+                    await page.getByRole('button', { name: 'Continue'}).click();
+                } else {
+                    await page.getByLabel(/Email address/).fill(user.email);
+                    await page.getByRole('button', { name: /Use single sign-on/ }).click();
+                }
             });
 
             await test.step('Keycloak login', async () => {
