@@ -72,7 +72,7 @@ test('Invite users', async ({ page }) => {
     });
 });
 
-test.fail('invited with new account', async ({ page }) => {
+test('invited with new account', async ({ page }) => {
     const link = await test.step('Extract email link', async () => {
         const invited = await mail2Buffer.next((m) => m.subject === "Join Test");
         await page.setContent(invited.html);
