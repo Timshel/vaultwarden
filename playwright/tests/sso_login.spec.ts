@@ -49,12 +49,8 @@ test('Non SSO login impossible', async ({ page, browser }, testInfo: TestInfo) =
     await page.getByLabel(/Email address/).fill(users.user1.email);
     await page.getByRole('button', { name: 'Continue' }).click();
 
-    // Unlock page
-    await page.getByLabel('Master password').fill(users.user1.password);
-    await page.getByRole('button', { name: 'Log in with master password' }).click();
-
-    // An error should appear
-    await page.getByLabel('SSO sign-in is required')
+    // No Master password
+    await expect(page.getByLabel('Master password')).toBeHidden();
 
     // Check the selector for the next test
     await expect(page.getByRole('link', { name: /Enterprise single sign-on/ })).toHaveCount(1);
