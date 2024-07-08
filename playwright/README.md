@@ -136,6 +136,10 @@ Then you can access :
 To proceed with an SSO login after you enter the email, on the screen prompting for `Master Password` the SSO button should be visible.
 To use your computer external ip (for example when testing with a phone) you will have to configure `KC_HTTP_HOST` and `DOMAIN`.
 
+## Switching VaultWarden front-end
+
+You can switch between both [version](https://github.com/Timshel/oidc_web_builds) of the front-end using the env variable `SSO_FRONTEND` with `button` or `override` (default is `button`).
+
 ## Running only Keycloak
 
 You can run just `Keycloak` with `--profile keycloak`:
@@ -144,11 +148,12 @@ You can run just `Keycloak` with `--profile keycloak`:
 > docker compose --profile keycloak --env-file .env up
 ```
 
-When running with a local VaultWarden and the default `web-vault` you'll need to make the SSO button visible using :
+When running with a local VaultWarden, if you are using a front-end build from [dani-garcia/bw_web_builds](https://github.com/dani-garcia/bw_web_builds/releases) you'll need to make the SSO button visible using :
 
 ```bash
 sed -i 's#a\[routerlink="/sso"\],##' web-vault/app/main.*.css
 ```
+Or use one of the prebuilt front-end from [timshel/oidc_web_builds](https://github.com/Timshel/oidc_web_builds/releases).
 
 Otherwise you'll need to reveal the SSO login button using the debug console (F12)
 

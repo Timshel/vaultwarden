@@ -208,12 +208,16 @@ export async function startVaultwarden(browser: Browser, testInfo: TestInfo, env
     console.log(`Vaultwarden running on: ${process.env.DOMAIN}`);
 }
 
-export async function stopVaultwarden() {
-    console.log(`Vaultwarden stopping`);
-    execSync(`docker compose --profile playwright --env-file test.env stop Vaultwarden`);
+export async function stopVaultwarden(force: boolean = false) {
+    if( force === false && process.env.PW_KEEP_SERVICE_RUNNNING === "true" ) {
+        console.log(`Keep vaultwarden running on: ${process.env.DOMAIN}`);
+    } else {
+        console.log(`Vaultwarden stopping`);
+        execSync(`docker compose --profile playwright --env-file test.env stop Vaultwarden`);
+    }
 }
 
 export async function restartVaultwarden(page: Page, testInfo: TestInfo, env, resetDB: Boolean = true) {
-    stopVaultwarden();
+    stopVaultwarden(true);
     return startVaultwarden(page.context().browser(), testInfo, env, resetDB);
 }
