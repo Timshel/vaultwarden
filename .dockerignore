@@ -7,6 +7,7 @@ data
 # Misc
 .env
 .env.template
+.git
 .gitattributes
 .gitignore
 rustfmt.toml
@@ -38,3 +39,6 @@ web-vault
 
 # Vaultwarden Resources
 resources
+
+# Playwright tests
+playwright
