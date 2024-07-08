@@ -2,19 +2,19 @@ import { test, expect, type TestInfo } from '@playwright/test';
 import { MailDev } from 'maildev';
 
 import * as utils from "../global-utils";
-import { createAccount, logUser } from './setups/sso';
+import { logNewUser, logUser } from './setups/sso';
 
 let users = utils.loadEnv();
 
-let mailserver, user1Mails, user2Mails, user3Mails;
+let mailServer, mail1Buffer, mail2Buffer, mail3Buffer;
 
 test.beforeAll('Setup', async ({ browser }, testInfo: TestInfo) => {
-    mailserver = new MailDev({
+    mailServer = new MailDev({
         port: process.env.MAILDEV_SMTP_PORT,
         web: { port: process.env.MAILDEV_HTTP_PORT },
     })
 
-    await mailserver.listen();
+    await mailServer.listen();
 
     await utils.startVaultwarden(browser, testInfo, {
         SMTP_HOST: process.env.MAILDEV_HOST,
@@ -23,22 +23,22 @@ test.beforeAll('Setup', async ({ browser }, testInfo: TestInfo) => {
         SSO_ONLY: true,
     });
 
-    user1Mails = mailserver.iterator(users.user1.email);
-    user2Mails = mailserver.iterator(users.user2.email);
-    user3Mails = mailserver.iterator(users.user3.email);
+    mail1Buffer = mailServer.buffer(users.user1.email);
+    mail2Buffer = mailServer.buffer(users.user2.email);
+    mail3Buffer = mailServer.buffer(users.user3.email);
 });
 
-test.afterAll('Teardown', async ({}, testInfo: TestInfo) => {
-    utils.stopVaultwarden(testInfo);
-    utils.closeMails(mailserver, [user1Mails, user2Mails, user3Mails]);
+test.afterAll('Teardown', async ({}) => {
+    utils.stopVaultwarden();
+    [mailServer, mail1Buffer, mail2Buffer, mail3Buffer].map((m) => m.close());
 });
 
 test('Create user2', async ({ page }) => {
-    await createAccount(test, page, users.user2, user2Mails);
+    await logNewUser(test, page, users.user2, { mailBuffer: mail2Buffer });
 });
 
 test('Invite users', async ({ page }) => {
-    await createAccount(test, page, users.user1, user1Mails);
+    await logNewUser(test, page, users.user1, { mailBuffer: mail1Buffer });
 
     await test.step('Create Org', async () => {
         await page.getByRole('link', { name: 'New organisation' }).click();
@@ -68,9 +68,7 @@ test('Invite users', async ({ page }) => {
 
 test('invited with existing account', async ({ page }) => {
     const link = await test.step('Extract email link', async () => {
-        const { value: invited } = await user2Mails.next();
-        expect(invited.subject).toContain("Join Test")
-
+        const invited = await mail2Buffer.next((m) => m.subject === "Join Test");
         await page.setContent(invited.html);
         return await page.getByTestId("invite").getAttribute("href");
     });
@@ -100,19 +98,14 @@ test('invited with existing account', async ({ page }) => {
     });
 
     await test.step('Check mails', async () => {
-        const { value: logged } = await user2Mails.next();
-        expect(logged.subject).toContain("New Device Logged")
-
-        const { value: accepted } = await user1Mails.next();
-        expect(accepted.subject).toContain("Invitation to Test accepted")
+        await expect(mail2Buffer.next((m) => m.subject.includes("New Device Logged"))).resolves.toBeDefined();
+        await expect(mail1Buffer.next((m) => m.subject === "Invitation to Test accepted")).resolves.toBeDefined();
     });
 });
 
 test('invited with new account', async ({ page }) => {
     const link = await test.step('Extract email link', async () => {
-        const { value: invited } = await user3Mails.next();
-        expect(invited.subject).toContain("Join Test")
-
+        const invited = await mail3Buffer.next((m) => m.subject === "Join Test");
         await page.setContent(invited.html);
         return await page.getByTestId("invite").getAttribute("href");
     });
@@ -143,10 +136,7 @@ test('invited with new account', async ({ page }) => {
     });
 
     await test.step('Check mails', async () => {
-        const { value: logged } = await user3Mails.next();
-        expect(logged.subject).toContain("New Device Logged")
-
-        const { value: accepted } = await user1Mails.next();
-        expect(accepted.subject).toContain("Invitation to Test accepted")
+        await expect(mail3Buffer.next((m) => m.subject.includes("New Device Logged"))).resolves.toBeDefined();
+        await expect(mail1Buffer.next((m) => m.subject === "Invitation to Test accepted")).resolves.toBeDefined();
     });
 });

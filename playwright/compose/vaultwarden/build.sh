@@ -3,22 +3,16 @@
 echo $REPO_URL
 echo $COMMIT_HASH
 
-if [[ ! -z "$REPO_URL" ]] && [[ ! -z "$COMMIT_HASH" ]] ; then
-    rm -rf /web-vault
+if [[ ! -z "${REPO_URL}" ]] && [[ ! -z "${COMMIT_HASH}" ]] ; then
+    rm -rf /web-vault_button /web-vault_override
 
-    mkdir bw_web_builds;
-    cd bw_web_builds;
+    git clone ${REPO_URL} /oidc_web_builds
+    cd /oidc_web_builds
+    git reset --hard "${COMMIT_HASH}"
 
-    git -c init.defaultBranch=main init
-    git remote add origin "$REPO_URL"
-    git fetch --depth 1 origin "$COMMIT_HASH"
-    git -c advice.detachedHead=false checkout FETCH_HEAD
+    ./build_webvault.sh
 
-    export VAULT_VERSION=$(cat Dockerfile | grep "ARG VAULT_VERSION" | cut -d "=" -f2)
-    ./scripts/checkout_web_vault.sh
-    ./scripts/patch_web_vault.sh
-    ./scripts/build_web_vault.sh
-    printf '{"version":"%s"}' "$COMMIT_HASH" > ./web-vault/apps/web/build/vw-version.json
-
-    mv ./web-vault/apps/web/build /web-vault
+    cd /
+    tar -xf /oidc_web_builds/oidc_button_web_vault.tar.gz; mv web-vault /web-vault_button
+    tar -xf /oidc_web_builds/oidc_override_web_vault.tar.gz; mv web-vault /web-vault_override
 fi
