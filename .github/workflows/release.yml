@@ -14,7 +14,7 @@ jobs:
   # We will skip this check if we are creating a tag, because that has the same hash as a previous run already.
   skip_check:
     runs-on: ubuntu-24.04
-    if: ${{ github.repository == 'dani-garcia/vaultwarden' }}
+    if: ${{ github.repository == 'timshel/vaultwarden' }}
     outputs:
       should_skip: ${{ steps.skip_check.outputs.should_skip }}
     steps:
@@ -33,9 +33,10 @@ jobs:
       attestations: write
       id-token: write
     runs-on: ubuntu-24.04
+    environment: main
     timeout-minutes: 120
     needs: skip_check
-    if: ${{ needs.skip_check.outputs.should_skip != 'true' && github.repository == 'dani-garcia/vaultwarden' }}
+    if: ${{ needs.skip_check.outputs.should_skip != 'true' && github.repository == 'timshel/vaultwarden' }}
     # Start a local docker registry to extract the compiled binaries to upload as artifacts and attest them
     services:
       registry:
@@ -166,7 +167,7 @@ jobs:
       - name: Add localhost registry
         shell: bash
         run: |
-          echo "CONTAINER_REGISTRIES=${CONTAINER_REGISTRIES:+${CONTAINER_REGISTRIES},}localhost:5000/vaultwarden/server" | tee -a "${GITHUB_ENV}"
+          echo "CONTAINER_REGISTRIES=${CONTAINER_REGISTRIES:+${CONTAINER_REGISTRIES},}localhost:5000/timshel/vaultwarden" | tee -a "${GITHUB_ENV}"
 
       - name: Bake ${{ matrix.base_image }} containers
         id: bake_vw
@@ -239,28 +240,28 @@ jobs:
           # This is needed because using different platforms doesn't trigger a new pull/download
 
           # Extract amd64 binary
-          docker create --name amd64 --platform=linux/amd64 "localhost:5000/vaultwarden/server:${EXTRACT_TAG}"
+          docker create --name amd64 --platform=linux/amd64 "localhost:5000/timshel/vaultwarden:${EXTRACT_TAG}"
           docker cp amd64:/vaultwarden vaultwarden-amd64-${{ matrix.base_image }}
           docker rm --force amd64
-          docker rmi --force "localhost:5000/vaultwarden/server:${EXTRACT_TAG}"
+          docker rmi --force "localhost:5000/timshel/vaultwarden:${EXTRACT_TAG}"
 
           # Extract arm64 binary
-          docker create --name arm64 --platform=linux/arm64 "localhost:5000/vaultwarden/server:${EXTRACT_TAG}"
+          docker create --name arm64 --platform=linux/arm64 "localhost:5000/timshel/vaultwarden:${EXTRACT_TAG}"
           docker cp arm64:/vaultwarden vaultwarden-arm64-${{ matrix.base_image }}
           docker rm --force arm64
-          docker rmi --force "localhost:5000/vaultwarden/server:${EXTRACT_TAG}"
+          docker rmi --force "localhost:5000/timshel/vaultwarden:${EXTRACT_TAG}"
 
           # Extract armv7 binary
-          docker create --name armv7 --platform=linux/arm/v7 "localhost:5000/vaultwarden/server:${EXTRACT_TAG}"
+          docker create --name armv7 --platform=linux/arm/v7 "localhost:5000/timshel/vaultwarden:${EXTRACT_TAG}"
           docker cp armv7:/vaultwarden vaultwarden-armv7-${{ matrix.base_image }}
           docker rm --force armv7
-          docker rmi --force "localhost:5000/vaultwarden/server:${EXTRACT_TAG}"
+          docker rmi --force "localhost:5000/timshel/vaultwarden:${EXTRACT_TAG}"
 
           # Extract armv6 binary
-          docker create --name armv6 --platform=linux/arm/v6 "localhost:5000/vaultwarden/server:${EXTRACT_TAG}"
+          docker create --name armv6 --platform=linux/arm/v6 "localhost:5000/timshel/vaultwarden:${EXTRACT_TAG}"
           docker cp armv6:/vaultwarden vaultwarden-armv6-${{ matrix.base_image }}
           docker rm --force armv6
-          docker rmi --force "localhost:5000/vaultwarden/server:${EXTRACT_TAG}"
+          docker rmi --force "localhost:5000/timshel/vaultwarden:${EXTRACT_TAG}"
 
       # Upload artifacts to Github Actions and Attest the binaries
       - name: "Upload amd64 artifact ${{ matrix.base_image }}"
