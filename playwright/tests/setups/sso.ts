@@ -8,20 +8,24 @@ export async function logNewUser(
     test: Test,
     page: Page,
     user: { email: string, name: string, password: string },
-    options: { mailBuffer?: MailBuffer, mailServer?: MailServer } = {}
+    options: { mailBuffer?: MailBuffer, mailServer?: MailServer, override?: boolean } = {}
 ) {
     let mailBuffer = options.mailBuffer ?? options.mailServer?.buffer(user.email);
     try {
         await test.step('Create user', async () => {
             await test.step('Landing page', async () => {
                 await page.goto('/');
-                await page.getByLabel(/Email address/).fill(user.email);
-                await page.getByRole('button', 'Continue').click();
+                if( !options.override ) {
+                    await page.getByLabel(/Email address/).fill(user.email);
+                }
+                await page.getByRole('button', { name: options.override ? 'Log in' : 'Continue' }).click();
             });
 
-            await test.step('SSo start page', async () => {
-                await page.getByRole('link', { name: /Enterprise single sign-on/ }).click();
-            });
+            if( !options.override ) {
+                await test.step('SSo start page', async () => {
+                    await page.getByRole('link', { name: /Enterprise single sign-on/ }).click();
+                });
+            }
 
             await test.step('Keycloak login', async () => {
                 await expect(page.getByRole('heading', { name: 'Sign in to your account' })).toBeVisible();
@@ -63,20 +67,24 @@ export async function logUser(
     test: Test,
     page: Page,
     user: { email: string, password: string },
-    options: { mailBuffer ?: MailBuffer, mailServer?: MailServer} = {}
+    options: { mailBuffer ?: MailBuffer, mailServer?: MailServer, override?: boolean } = {}
 ) {
     let mailBuffer = options.mailBuffer ?? options.mailServer?.buffer(user.email);
     try {
         await test.step('Log user', async () => {
             await test.step('Landing page', async () => {
                 await page.goto('/');
-                await page.getByLabel(/Email address/).fill(user.email);
-                await page.getByRole('button', 'Continue').click();
+                if( !options.override ) {
+                    await page.getByLabel(/Email address/).fill(user.email);
+                }
+                await page.getByRole('button', { name: options.override ? 'Log in' : 'Continue' }).click();
             });
 
-            await test.step('SSo start page', async () => {
-                await page.getByRole('link', { name: /Enterprise single sign-on/ }).click();
-            });
+            if( !options.override ) {
+                await test.step('SSo start page', async () => {
+                    await page.getByRole('link', { name: /Enterprise single sign-on/ }).click();
+                });
+            }
 
             await test.step('Keycloak login', async () => {
                 await expect(page.getByRole('heading', { name: 'Sign in to your account' })).toBeVisible();
