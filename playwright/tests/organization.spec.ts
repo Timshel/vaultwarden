@@ -26,8 +26,8 @@ test.beforeAll('Setup', async ({ browser }, testInfo: TestInfo) => {
     user3Mails = mailserver.iterator(users.user3.email);
 });
 
-test.afterAll('Teardown', async ({}, testInfo: TestInfo) => {
-    utils.stopVaultwarden(testInfo);
+test.afterAll('Teardown', async ({}) => {
+    utils.stopVaultwarden();
     utils.closeMails(mailserver, [user1Mails, user2Mails, user3Mails]);
 });
 
