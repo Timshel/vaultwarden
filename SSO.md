@@ -2,60 +2,60 @@
 
 To use an external source of authentication your SSO will need to support OpenID Connect :
 
- - And OpenID Connect Discovery endpoint should be available
- - Client authentication will be done using Id and Secret.
+- An OpenID Connect Discovery endpoint should be available
+- Client authentication will be done using Id and Secret.
 
-A master password will still required and not controlled by the SSO (depending of your point of view this might be a feature ;).
-This introduce another way to control who can use the vault without having to use invitation or using an LDAP.
+A master password will still be required and not controlled by the SSO (depending on your point of view this might be a feature ;).
+This introduces another way to control who can use the vault without having to use invitation or using an LDAP.
 
 ## Configuration
 
 The following configurations are available
 
- - `SSO_ENABLED` : Activate the SSO
- - `SSO_ONLY` : disable email+Master password authentication
- - `SSO_SIGNUPS_MATCH_EMAIL`: On SSO Signup if a user with a matching email already exists make the association (default `true`)
- - `SSO_AUTHORITY` : the OpendID Connect Discovery endpoint of your SSO
- 	- Should not include the `/.well-known/openid-configuration` part and no trailing `/`
- 	- $SSO_AUTHORITY/.well-known/openid-configuration should return the a json document: https://openid.net/specs/openid-connect-discovery-1_0.html#ProviderConfigurationResponse
- - `SSO_SCOPES` : Optional, allow to override scopes if needed (default `"email profile"`)
- - `SSO_AUTHORIZE_EXTRA_PARAMS` : Optional, allow to add extra parameter to the authorize redirection (default `""`)
- - `SSO_PKCE`: Activate PKCE for the Auth Code flow. Recommended but disabled for now waiting for feedback on support (default `false`).
- - `SSO_AUDIENCE_TRUSTED`: Optional, Regex to trust additionnal audience for the IdToken (`client_id` is always trusted). Use single quote when writing the regex: `'^$'`.
- - `SSO_CLIENT_ID` : Client Id
- - `SSO_CLIENT_SECRET` : Client Secret
- - `SSO_MASTER_PASSWORD_POLICY`: Optional Master password policy
- - `SSO_AUTH_ONLY_NOT_SESSION`: Enable to use SSO only for authentication not session lifecycle.
- - `SSO_ROLES_ENABLED`: control if the mapping is done, default is `false`
- - `SSO_ROLES_DEFAULT_TO_USER`: do not block login in case of missing or invalid roles, default is `true`.
- - `SSO_ROLES_TOKEN_PATH=/resource_access/${SSO_CLIENT_ID}/roles`: path to read roles in the Id token
- - `SSO_ORGANIZATIONS_INVIT`: control if the mapping is done, default is `false`
- - `SSO_ORGANIZATIONS_TOKEN_PATH`: path to read groups/organization in the Id token
- - `SSO_ORGANIZATIONS_ID_MAPPING`: Optional, allow to map provider group to a Vaultwarden organization `uuid` (default `""`, format: `"ProviderId:VaultwardenId;"`)
- - `SSO_ORGANIZATIONS_ALL_COLLECTIONS`: Grant access to all collections, default is `true`
- - `SSO_CLIENT_CACHE_EXPIRATION`: Cache calls to the discovery endpoint, duration in seconds, `0` to disable (default `0`);
- - `SSO_DEBUG_TOKENS`: Log all tokens for easier debugging (default `false`, `LOG_LEVEL=debug` or `LOG_LEVEL_OVERRIDE=vaultwarden::sso=debug` need to be set)
+- `SSO_ENABLED` : Activate the SSO
+- `SSO_ONLY` : disable email+Master password authentication
+- `SSO_SIGNUPS_MATCH_EMAIL`: On SSO Signup if a user with a matching email already exists make the association (default `true`)
+- `SSO_AUTHORITY` : the OpenID Connect Discovery endpoint of your SSO
+  - Should not include the `/.well-known/openid-configuration` part and no trailing `/`
+  - $SSO_AUTHORITY/.well-known/openid-configuration should return the a json document: <https://openid.net/specs/openid-connect-discovery-1_0.html#ProviderConfigurationResponse>
+- `SSO_SCOPES` : Optional, allow to override scopes if needed (default `"email profile"`)
+- `SSO_AUTHORIZE_EXTRA_PARAMS` : Optional, allow to add extra parameter to the authorize redirection (default `""`)
+- `SSO_PKCE`: Activate PKCE for the Auth Code flow. Recommended but disabled for now waiting for feedback on support (default `false`).
+- `SSO_AUDIENCE_TRUSTED`: Optional, Regex to trust additional audience for the IdToken (`client_id` is always trusted). Use single quote when writing the regex: `'^$'`.
+- `SSO_CLIENT_ID` : Client Id
+- `SSO_CLIENT_SECRET` : Client Secret
+- `SSO_MASTER_PASSWORD_POLICY`: Optional Master password policy
+- `SSO_AUTH_ONLY_NOT_SESSION`: Enable to use SSO only for authentication not session lifecycle.
+- `SSO_ROLES_ENABLED`: control if the mapping is done, default is `false`
+- `SSO_ROLES_DEFAULT_TO_USER`: do not block login in case of missing or invalid roles, default is `true`.
+- `SSO_ROLES_TOKEN_PATH=/resource_access/${SSO_CLIENT_ID}/roles`: path to read roles in the Id token
+- `SSO_ORGANIZATIONS_INVITE`: control if the mapping is done, default is `false`
+- `SSO_ORGANIZATIONS_TOKEN_PATH`: path to read groups/organization in the Id token
+- `SSO_ORGANIZATIONS_ID_MAPPING`: Optional, allow to map provider group to a Vaultwarden organization `uuid` (default `""`, format: `"ProviderId:VaultwardenId;"`)
+- `SSO_ORGANIZATIONS_ALL_COLLECTIONS`: Grant access to all collections, default is `true`
+- `SSO_CLIENT_CACHE_EXPIRATION`: Cache calls to the discovery endpoint, duration in seconds, `0` to disable (default `0`);
+- `SSO_DEBUG_TOKENS`: Log all tokens for easier debugging (default `false`, `LOG_LEVEL=debug` or `LOG_LEVEL_OVERRIDE=vaultwarden::sso=debug` need to be set)
 
 The callback url is : `https://your.domain/identity/connect/oidc-signin`
 
 ## Account and Email handling
 
-When logging with SSO an identifier (`{iss}/{sub}` claims from the IdToken) is saved in a separate table (`sso_users`).
+When logging in with SSO an identifier (`{iss}/{sub}` claims from the IdToken) is saved in a separate table (`sso_users`).
 This is used to link to the SSO provider identifier without changing the default Vaultwarden user `uuid`. This is needed because:
 
- - Storing the SSO identifier is important to prevent account takeover due to email change.
- - We can't use the identifier as the User uuid since it's way longer (Max 255 chars for the `sub` part, cf [spec](https://openid.net/specs/openid-connect-core-1_0.html#CodeIDToken)).
- - We want to be able to associate existing account based on `email` but only when the user log for the first time (controlled by `SSO_SIGNUPS_MATCH_EMAIL`).
- - We need to be able to associate with existing stub account, such as the one created when inviting a user to an org (association is possible only if the user does not have a private key).
+- Storing the SSO identifier is important to prevent account takeover due to email change.
+- We can't use the identifier as the User uuid since it's way longer (Max 255 chars for the `sub` part, cf [spec](https://openid.net/specs/openid-connect-core-1_0.html#CodeIDToken)).
+- We want to be able to associate existing account based on `email` but only when the user logs in for the first time (controlled by `SSO_SIGNUPS_MATCH_EMAIL`).
+- We need to be able to associate with existing stub account, such as the one created when inviting a user to an org (association is possible only if the user does not have a private key).
 
-Additionnaly:
+Additionally:
 
- - Signup to Vaultwarden will be blocked if the Provider report the email as `unverified`.
- - Changing the email need to be done by the user since it require updating the `key`.
- 	 On login if the email returned by the provider is not the one saved in Vaultwarden an email will be sent to the user to ask him to update it.
- - If set `SIGNUPS_DOMAINS_WHITELIST` is applied on SSO signup and when attempting to change the email.
+- Signup to Vaultwarden will be blocked if the Provider reports the email as `unverified`.
+- Changing the email needs to be done by the user since it requires updating the `key`.
+   On login if the email returned by the provider is not the one saved in Vaultwarden an email will be sent to the user to ask him to update it.
+- If set `SIGNUPS_DOMAINS_WHITELIST` is applied on SSO signup and when attempting to change the email.
 
-This mean that if you ever need to change the provider url or the provider itself; you'll have to first delete the association
+This means that if you ever need to change the provider url or the provider itself; you'll have to first delete the association
 then ensure that `SSO_SIGNUPS_MATCH_EMAIL` is activated to allow a new association.
 
 To delete the association (this has no impact on the `Vaultwarden` user):
@@ -68,8 +68,8 @@ TRUNCATE TABLE sso_users;
 
 By default the client cache is disabled since it can cause issues with the signing keys.
 \
-This mean that the discovery endpoint will be called again each time we need to interact with the provider (generating authorize_url, exhange the authorize code, refresh tokens).
-This is suboptimal so the `SSO_CLIENT_CACHE_EXPIRATION` allow you to configure an expiration that should work for your provider.
+This means that the discovery endpoint will be called again each time we need to interact with the provider (generating authorize_url, exchange the authorize code, refresh tokens).
+This is suboptimal so the `SSO_CLIENT_CACHE_EXPIRATION` allows you to configure an expiration that should work for your provider.
 
 As a protection against a misconfigured expiration if the validation of the `IdToken` fails then the client cache is invalidated (but you'll periodically have an unlucky user ^^).
 
@@ -86,13 +86,14 @@ Setting the cache expiration too high has diminishing return but using something
 If you want to roll the used key, first add a new one but do not immediately start signing with it.
 Wait for the delay you configured in `SSO_CLIENT_CACHE_EXPIRATION` then you can start signing with it.
 
-As mentionned in the Google example setting too high of a value has dimishing return even if you do not plan to roll the keys.
+As mentioned in the Google example setting too high of a value has diminishing return even if you do not plan to roll the keys.
 
 ## Keycloak
 
 Default access token lifetime might be only `5min`, set a longer value otherwise it will collide with `VaultWarden` front-end expiration detection which is also set at `5min`.
 \
 At the realm level
+
 - `Realm settings / Tokens / Access Token Lifespan` to at least `10min` (`accessTokenLifespan` setting when using `kcadm.sh`).
 - `Realm settings / Sessions / SSO Session Idle/Max` for the Refresh token lifetime
 
@@ -110,7 +111,7 @@ Server configuration, nothing specific just set:
 If you want to run a testing instance of Keycloak the Playwright [docker-compose](playwright/docker-compose.yml) can be used.
 \
 More details on how to use it in [README.md](playwright/README.md#openid-connect-test-setup).
-https://github.com/Timshel/vaultwarden/blob/sso-support/playwright/README.md#openid-connect-test-setup
+<https://github.com/Timshel/vaultwarden/blob/sso-support/playwright/README.md#openid-connect-test-setup>
 
 ## Authelia
 
@@ -118,8 +119,7 @@ To obtain a `refresh_token` to be able to extend session you'll need to add the 
 
 Config will look like:
 
- - `SSO_SCOPES="email profile offline_access"`
-
+- `SSO_SCOPES="email profile offline_access"`
 
 ## Authentik
 
@@ -139,23 +139,23 @@ Server configuration should look like:
 
 ## Casdoor
 
-Not working at the moment. The `id_token` always contains a malformated address claim.
+Not working at the moment. The `id_token` always contains a malformed address claim.
 An [issue](https://github.com/casdoor/casdoor/issues/3001) was opened but the fix was reverted and the issue not reopened.
 
 ## GitLab
 
 Create an application in your Gitlab Settings with
 
-- `redirectURI`: https://your.domain/identity/connect/oidc-signin
+- `redirectURI`: <https://your.domain/identity/connect/oidc-signin>
 - `Confidential`: `true`
 - `scopes`: `openid`, `profile`, `email`
 
 Then configure your server with
 
- - `SSO_AUTHORITY=https://gitlab.com`
- - `SSO_CLIENT_ID`
- - `SSO_CLIENT_SECRET`
- - `SSO_PKCE=true`
+- `SSO_AUTHORITY=https://gitlab.com`
+- `SSO_CLIENT_ID`
+- `SSO_CLIENT_SECRET`
+- `SSO_PKCE=true`
 
 ## Google Auth
 
@@ -165,16 +165,18 @@ By default without extra [configuration](https://developers.google.com/identity/
 
 Configure your server with :
 
-  - `SSO_AUTHORITY=https://accounts.google.com`
-  - ```conf
-	  SSO_AUTHORIZE_EXTRA_PARAMS="
-	  access_type=offline
-	  prompt=consent
-	  "
-	  ```
-  - `SSO_PKCE=true`
-  - `SSO_CLIENT_ID`
-  - `SSO_CLIENT_SECRET`
+- `SSO_AUTHORITY=https://accounts.google.com`
+
+- ```conf
+   SSO_AUTHORIZE_EXTRA_PARAMS="
+   access_type=offline
+   prompt=consent
+   "
+   ```
+
+- `SSO_PKCE=true`
+- `SSO_CLIENT_ID`
+- `SSO_CLIENT_SECRET`
 
 ## Kanidm
 
@@ -182,7 +184,7 @@ Kanidm recommend always running with PKCE:
 
 Config will look like:
 
- - `SSO_PKCE=true`
+- `SSO_PKCE=true`
 
 Otherwise you can disable the PKCE requirement with: `kanidm system oauth2 warning-insecure-client-disable-pkce CLIENT_NAME --name admin`.
 
@@ -191,30 +193,44 @@ Otherwise you can disable the PKCE requirement with: `kanidm system oauth2 warni
 1. Create an "App registration" in [Entra ID](https://entra.microsoft.com/) following [Identity | Applications | App registrations](https://entra.microsoft.com/#blade/Microsoft_AAD_RegisteredApps/ApplicationsListBlade/quickStartType//sourceType/Microsoft_AAD_IAM).
 2. From the "Overview" of your "App registration", you'll need the "Directory (tenant) ID" for the `SSO_AUTHORITY` variable and the "Application (client) ID" as the `SSO_CLIENT_ID` value.
 3. In "Certificates & Secrets" create an "App secret" , you'll need the "Secret Value" for the `SSO_CLIENT_SECRET` variable.
-4. In "Authentication" add https://vaultwarden.example.org/identity/connect/oidc-signin as "Web Redirect URI".
-5. In "API Permissions" make sure you have `profile`, `email` and `offline_access` listed under "API / Permission name" (`offline_access` is required, otherwise no refresh_token is returned, see https://github.com/MicrosoftDocs/azure-docs/issues/17134).
+4. In "Authentication" add <https://vaultwarden.example.org/identity/connect/oidc-signin> as "Web Redirect URI".
+5. In "API Permissions" make sure you have `profile`, `email` and `offline_access` listed under "API / Permission name" (`offline_access` is required, otherwise no refresh_token is returned, see <https://github.com/MicrosoftDocs/azure-docs/issues/17134>).
 
-Only the v2 endpooint is compliant with the OpenID spec, see https://github.com/MicrosoftDocs/azure-docs/issues/38427 and https://github.com/ramosbugs/openidconnect-rs/issues/122.
+Only the v2 endpoint is compliant with the OpenID spec, see <https://github.com/MicrosoftDocs/azure-docs/issues/38427> and <https://github.com/ramosbugs/openidconnect-rs/issues/122>.
 
 Your configuration should look like this:
 
-* `SSO_AUTHORITY=https://login.microsoftonline.com/${Directory (tenant) ID}/v2.0`
-* `SSO_SCOPES="email profile offline_access"`
-* `SSO_CLIENT_ID=${Application (client) ID}`
-* `SSO_CLIENT_SECRET=${Secret Value}`
+- `SSO_AUTHORITY=https://login.microsoftonline.com/${Directory (tenant) ID}/v2.0`
+- `SSO_SCOPES="email profile offline_access"`
+- `SSO_CLIENT_ID=${Application (client) ID}`
+- `SSO_CLIENT_SECRET=${Secret Value}`
 
-If you want to leverage role mapping you have to create app roles first as described here: https://learn.microsoft.com/en-us/entra/identity-platform/howto-add-app-roles-in-apps.
+If you want to leverage role mapping you have to create app roles first as described here: <https://learn.microsoft.com/en-us/entra/identity-platform/howto-add-app-roles-in-apps>.
 Afterwards you can use these settings to derive the `admin` role from the ID token:
 
-* `SSO_ROLES_ENABLED=true`
-* `SSO_ROLES_DEFAULT_TO_USER=true`
-* `SSO_ROLES_TOKEN_PATH=/roles
+- `SSO_ROLES_ENABLED=true`
+- `SSO_ROLES_DEFAULT_TO_USER=true`
+- `SSO_ROLES_TOKEN_PATH=/roles
+
+If you want to use Org mapping, you need to setup [Optional Claims](https://learn.microsoft.com/en-us/entra/identity-platform/optional-claims?tabs=appui)
+
+1. Goto your Entra App Registration.
+2. Click on Token Configuration.
+3. Click Add Group Claim.
+4. Check security groups and then add.
+5. Get the group ObjectID from Entra groups list.
+6. Get the vaultwarden org uuid from the admin page.
+
+Use this configuration
+
+`SSO_ORGANIZATIONS_INVITE=true`
+`SSO_ORGANIZATIONS_ID_MAPPING="EntraObjectID:vaultwardenuuid"`
 
 ## Zitadel
 
 To obtain a `refresh_token` to be able to extend session you'll need to add the `offline_access` scope.
 
-Additionnaly Zitadel include the `Project id` and the `Client Id` in the audience of the Id Token.
+Additionally Zitadel include the `Project id` and the `Client Id` in the audience of the Id Token.
 For the validation to work you will need to add the `Resource Id` as a trusted audience (`Client Id` is trusted by default).
 You can control the trusted audience with the config `SSO_AUDIENCE_TRUSTED`
 
@@ -222,12 +238,12 @@ It appears it's not possible to use PKCE with confidential client so it needs to
 
 Config will look like:
 
-	- `SSO_AUTHORITY=https://${provider_host}`
-	- `SSO_SCOPES="email profile offline_access"`
-	- `SSO_CLIENT_ID`
-	- `SSO_CLIENT_SECRET`
-  - `SSO_AUDIENCE_TRUSTED='^${Project Id}$'`
-  - `SSO_PKCE=false`
+- `SSO_AUTHORITY=https://${provider_host}`
+- `SSO_SCOPES="email profile offline_access"`
+- `SSO_CLIENT_ID`
+- `SSO_CLIENT_SECRET`
+- `SSO_AUDIENCE_TRUSTED='^${Project Id}$'`
+- `SSO_PKCE=false`
 
 ## Session lifetime
 
@@ -235,11 +251,11 @@ Session lifetime is dependant on refresh token and access token returned after c
 If no refresh token is returned then the session will be limited to the access token lifetime.
 
 Tokens are not persisted in VaultWarden but wrapped in JWT tokens and returned to the application (The `refresh_token` and `access_token` values returned by VW `identity/connect/token` endpoint).
-Note that VaultWarden will always return a `refresh_token` for compatibility reasons with the web front and it presence does not indicate that a refresh token was returned by your SSO (But you can decode its value with https://jwt.io and then check if the `token` field contain anything).
+Note that VaultWarden will always return a `refresh_token` for compatibility reasons with the web front and it presence does not indicate that a refresh token was returned by your SSO (But you can decode its value with <https://jwt.io> and then check if the `token` field contain anything).
 
 With a refresh token present, activity in the application will trigger a refresh of the access token when it's close to expiration ([5min](https://github.com/bitwarden/clients/blob/0bcb45ed5caa990abaff735553a5046e85250f24/libs/common/src/auth/services/token.service.ts#L126) in web client).
 
-Additionnaly for certain action a token check is performed, if we have a refresh token we will perform a refresh otherwise we'll call the user information endpoint to check the access token validity.
+Additionally for certain action a token check is performed, if we have a refresh token we will perform a refresh otherwise we'll call the user information endpoint to check the access token validity.
 
 ### Disabling SSO session handling
 
@@ -262,11 +278,10 @@ Probably not much hope, an [issue](https://github.com/bitwarden/clients/issues/2
 
 On Windows you'll be presented with a prompt the first time you log to confirm which application should be launched (But there is a bug at the moment you might end-up with an empty vault after login atm).
 
-
 On Linux it's a bit more tricky.
 First you'll need to add some config in `about:config` :
 
-```
+```conf
 network.protocol-handler.expose.bitwarden=false
 network.protocol-handler.external.bitwarden=true
 ```
