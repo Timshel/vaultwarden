@@ -327,10 +327,6 @@ fn init_logging() -> Result<log::LevelFilter, Error> {
         logger = logger.level_for(path.to_string(), level);
     }
 
-    for (path, level) in CONFIG.log_overrides() {
-        logger = logger.level_for(path, level);
-    }
-
     if CONFIG.extended_logging() {
         logger = logger.format(|out, message, record| {
             out.finish(format_args!(
