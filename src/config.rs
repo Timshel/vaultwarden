@@ -1,11 +1,9 @@
 use std::collections::HashMap;
 use std::env::consts::EXE_SUFFIX;
 use std::process::exit;
-use std::str::FromStr;
 use std::sync::RwLock;
 
 use job_scheduler_ng::Schedule;
-use log::LevelFilter;
 use once_cell::sync::Lazy;
 use reqwest::Url;
 
@@ -418,6 +416,9 @@ make_config! {
         /// Auth Request cleanup schedule |> Cron schedule of the job that cleans old auth requests from the auth request.
         /// Defaults to every minute. Set blank to disable this job.
         auth_request_purge_schedule:   String, false,  def,    "30 * * * * *".to_string();
+        /// Duo Auth context cleanup schedule |> Cron schedule of the job that cleans expired Duo contexts from the database. Does nothing if Duo MFA is disabled or set to use the legacy iframe prompt.
+        /// Defaults to once every minute. Set blank to disable this job.
+        duo_context_purge_schedule:   String, false,  def,    "30 * * * * *".to_string();
         /// Purge incomplete sso nonce.
         /// Defaults to daily. Set blank to disable this job.
         purge_incomplete_sso_nonce: String, false,  def,   "0 20 0 * * *".to_string();
@@ -581,10 +582,9 @@ make_config! {
         use_syslog:             bool,   false,  def,    false;
         /// Log file path
         log_file:               String, false,  option;
-        /// Log level
-        log_level:              String, false,  def,    "Info".to_string();
-        /// Override individual log level
-        log_level_override:     String, false,  def,    String::new();
+        /// Log level |> Valid values are "trace", "debug", "info", "warn", "error" and "off"
+        /// For a specific module append it as a comma separated value "info,path::to::module=debug"
+        log_level:              String, false,  def,    "info".to_string();
 
         /// Enable DB WAL |> Turning this off might lead to worse performance, but might help if using vaultwarden on some exotic filesystems,
         /// that do not support WAL. Please make sure you read project wiki on the topic before changing this setting.
@@ -622,7 +622,13 @@ make_config! {
         admin_session_lifetime:        i64, true,  def, 20;
 
         /// Enable groups (BETA!) (Know the risks!) |> Enables groups support for organizations (Currently contains known issues!).
-        org_groups_enabled:     bool,   false,  def,    false;
+        org_groups_enabled:            bool, false, def, false;
+
+        /// Increase note size limit (Know the risks!) |> Sets the secure note size limit to 100_000 instead of the default 10_000.
+        /// WARNING: This could cause issues with clients. Also exports will not work on Bitwarden servers!
+        increase_note_size_limit:      bool,  true,  def, false;
+        /// Generated max_note_size value to prevent if..else matching during every check
+        _max_note_size:                usize, false, gen, |c| if c.increase_note_size_limit {100_000} else {10_000};
     },
 
     /// OpenID Connect SSO settings
@@ -669,7 +675,7 @@ make_config! {
         sso_organizations_all_collections: bool, true,  def,   true;
         /// Client cache for discovery endpoint. Duration in seconds (0 or less to disable).
         sso_client_cache_expiration:    u64,    true,   def,    0;
-        /// Log all tokens, `LOG_LEVEL=debug` or `LOG_LEVEL_OVERRIDE=vaultwarden::sso=debug` is required
+        /// Log all tokens, `LOG_LEVEL=debug` or `LOG_LEVEL=info,vaultwarden::sso=debug` is required
         sso_debug_tokens:               bool,   true,   def,    false;
     },
 
@@ -689,6 +695,8 @@ make_config! {
     duo: _enable_duo {
         /// Enabled
         _enable_duo:            bool,   true,   def,     true;
+        /// Attempt to use deprecated iframe-based Traditional Prompt (Duo WebSDK 2)
+        duo_use_iframe:         bool,   false,  def,     false;
         /// Integration Key
         duo_ikey:               String, true,   option;
         /// Secret Key
@@ -1061,6 +1069,11 @@ fn validate_config(cfg: &ConfigItems) -> Result<(), Error> {
             _ => {}
         }
     }
+
+    if cfg.increase_note_size_limit {
+        println!("[WARNING] Secure Note size limit is increased to 100_000!");
+        println!("[WARNING] This could cause issues with clients. Also exports will not work on Bitwarden servers!.");
+    }
     Ok(())
 }
 
@@ -1415,19 +1428,6 @@ impl Config {
     pub fn sso_organizations_id_mapping_map(&self) -> HashMap<String, String> {
         parse_as_hashmap(self.sso_organizations_id_mapping())
     }
-
-    pub fn log_overrides(&self) -> Vec<(String, LevelFilter)> {
-        parse_param_list(self.log_level_override())
-            .into_iter()
-            .filter_map(|(k, v)| match LevelFilter::from_str(&v) {
-                Ok(lv) => Some((k, lv)),
-                Err(_) => {
-                    println!("[WARNING] Invalid log level: {k}={v}");
-                    None
-                }
-            })
-            .collect()
-    }
 }
 
 use handlebars::{
@@ -1503,14 +1503,7 @@ where
     // And then load user templates to overwrite the defaults
     // Use .hbs extension for the files
     // Templates get registered with their relative name
-    hb.register_templates_directory(
-        path,
-        DirectorySourceOptions {
-            tpl_extension: ".hbs".to_owned(),
-            ..Default::default()
-        },
-    )
-    .unwrap();
+    hb.register_templates_directory(path, DirectorySourceOptions::default()).unwrap();
 
     hb
 }
