@@ -168,9 +168,9 @@ impl Organization {
             "useGroups": CONFIG.org_groups_enabled(),
             "useTotp": true,
             "usePolicies": true,
-            // "UseScim": false, // Not supported (Not AGPLv3 Licensed)
+            // "useScim": false, // Not supported (Not AGPLv3 Licensed)
             "useSso": false, // Not supported
-            // "UseKeyConnector": false, // Not supported
+            // "useKeyConnector": false, // Not supported
             "selfHost": true,
             "useApi": true,
             "hasPublicAndPrivateKeys": self.private_key.is_some() && self.public_key.is_some(),

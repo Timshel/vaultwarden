@@ -634,33 +634,33 @@ make_config! {
     sso {
         /// Enabled
         sso_enabled:                    bool,   true,   def,    false;
-        /// Disable Email+Master Password login
+        /// Only sso login |> Disable Email+Master Password login
         sso_only:                       bool,   true,   def,    false;
-        /// Associate existing user based on email
+        /// Allow email associtation |> Associate existing non-sso user based on email
         sso_signups_match_email:        bool,   true,   def,    true;
         /// Client ID
         sso_client_id:                  String, false,   def,    String::new();
         /// Client Key
         sso_client_secret:              Pass,   false,   def,    String::new();
-        /// Authority Server
+        /// Authority Server |> Base url of the OIDC provider discovery endpoint (without `/.well-known/openid-configuration`)
         sso_authority:                  String, false,   def,    String::new();
-        /// Scopes required for authorize
+        /// Authorization request scopes |> List the of the needed scope (`openid` is implicit)
         sso_scopes:                     String, false,  def,   "email profile".to_string();
-        /// Additionnal authorization url parameters
+        /// Authorization request extra parameters
         sso_authorize_extra_params:     String, false,  def,    String::new();
-        /// Use PKCE during Auth Code flow
+        /// Use PKCE during Authorization flow
         sso_pkce:                       bool,   false,   def,    false;
-        /// Regex for additionnal trusted Id token audience
+        /// Regex for additionnal trusted Id token audience |> By default only the client_id is trsuted.
         sso_audience_trusted:           String, false,  option;
-        /// CallBack Path
+        /// CallBack Path |> Generated from Domain.
         sso_callback_path:              String, false,  gen,    |c| generate_sso_callback_path(&c.domain);
-        /// Optional sso master password policy
+        /// Optional sso master password policy |> Ex format: '{"enforceOnLogin":false,"minComplexity":3,"minLength":12,"requireLower":false,"requireNumbers":false,"requireSpecial":false,"requireUpper":false}'
         sso_master_password_policy:     String, true,  option;
-        /// Use sso only for auth not the session lifecycle
+        /// Use sso only for auth not the session lifecycle |> Use default Vaultwarden session lifecycle (Idle refresh token valid for 30days)
         sso_auth_only_not_session:      bool,   true,   def,    false;
-        /// Client cache for discovery endpoint. Duration in seconds (0 or less to disable).
+        /// Client cache for discovery endpoint. |> Duration in seconds (0 or less to disable). More details: https://github.com/dani-garcia/vaultwarden/blob/sso-support/SSO.md#client-cache
         sso_client_cache_expiration:    u64,    true,   def,    0;
-        /// Log all tokens, LOG_LEVEL=debug is required
+        /// Log all tokens |> `LOG_LEVEL=debug` or `LOG_LEVEL=info,vaultwarden::sso=debug` is required
         sso_debug_tokens:               bool,   true,   def,    false;
     },
 
@@ -689,7 +689,7 @@ make_config! {
         /// Host
         duo_host:               String, true,   option;
         /// Application Key (generated automatically)
-        _duo_akey:              Pass,   true,  option;
+        _duo_akey:              Pass,   false,  option;
     },
 
     /// SMTP Email Settings

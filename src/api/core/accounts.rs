@@ -92,8 +92,7 @@ pub struct SetPasswordData {
     keys: Option<KeysData>,
     master_password_hash: String,
     master_password_hint: Option<String>,
-    #[allow(dead_code)]
-    org_identifier: Option<String>,
+    // org_identifier: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
