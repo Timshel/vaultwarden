@@ -1,5 +1,22 @@
 # Changelog
 
+# testing
+
+- Rebased on `main` from `dani-garcia/vaultwarden` (`2024-08-22`)
+- Org invitation now redirect to SSO login if `SSO_ONLY=true` is set.
+
+# 1.32.0-2
+
+- Based on `1.32.0` from `dani-garcia/vaultwarden`
+- Upgrade [oidc_web_builds](https://github.com/Timshel/oidc_web_builds) version to `v2024.6.2-2`
+  Org invitation was lost when creating the master password post SSO loogin.
+
+# 1.32.0-1
+
+- Rebased on `1.32.0` from `dani-garcia/vaultwarden`
+- Upgrade [oidc_web_builds](https://github.com/Timshel/oidc_web_builds) version to `v2024.6.2-1`
+- Removed `LOG_LEVEL_OVERRIDE` since `LOG_LEVEL=info,vaultwarden::sso=debug` is now available
+
 # 1.32.0-1
 
 - Rebased on `1.32.0` from `dani-garcia/vaultwarden`
