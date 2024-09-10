@@ -936,6 +936,7 @@ async fn send_invite(org_id: &str, data: Json<InviteData>, headers: AdminHeaders
             data.access_all,
             &collections,
             headers.user.email.clone(),
+            false,
             &mut conn,
         )
         .await?;
