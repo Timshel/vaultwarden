@@ -1068,6 +1068,7 @@ async fn send_invite(
             data.access_all,
             &collections,
             headers.user.email.clone(),
+            false,
             &mut conn,
         )
         .await

@@ -17,19 +17,22 @@ pub async fn invite(
     access_all: bool,
     collections: &Vec<CollectionData>,
     invited_by_email: String,
+    auto: bool,
     conn: &mut DbConn,
 ) -> ApiResult<()> {
-    let mut user_org_status = MembershipStatus::Invited;
+    let mut membership_status = MembershipStatus::Invited;
 
-    // automatically accept existing users if mail is disabled
-    if !user.password_hash.is_empty() && !CONFIG.mail_enabled() {
-        user_org_status = MembershipStatus::Accepted;
+    // automatically accept existing users if mail is disabled or config if set
+    if (!user.password_hash.is_empty() && !CONFIG.mail_enabled())
+        || (CONFIG.sso_enabled() && CONFIG.organization_invite_auto_accept())
+    {
+        membership_status = MembershipStatus::Accepted;
     }
 
     let mut new_member = Membership::new(user.uuid.clone(), org.uuid.clone(), Some(invited_by_email.clone()));
     new_member.access_all = access_all;
     new_member.atype = membership_type as i32;
-    new_member.status = user_org_status as i32;
+    new_member.status = membership_status as i32;
 
     // If no accessAll, add the collections received
     if !access_all {
@@ -70,7 +73,7 @@ pub async fn invite(
     .await;
 
     if CONFIG.mail_enabled() {
-        match user_org_status {
+        match membership_status {
             MembershipStatus::Invited => {
                 if let Err(e) = mail::send_invite(
                     user,
@@ -85,7 +88,12 @@ pub async fn invite(
                     err!(format!("Error sending invite: {e:?} "));
                 }
             }
-            MembershipStatus::Accepted => mail::send_invite_accepted(&user.email, &invited_by_email, &org.name).await?,
+            MembershipStatus::Accepted => {
+                mail::send_enrolled(&user.email, &org.name).await?;
+                if auto {
+                    mail::send_invite_accepted(&user.email, &invited_by_email, &org.name).await?;
+                }
+            }
             MembershipStatus::Revoked | MembershipStatus::Confirmed => (),
         }
     }
