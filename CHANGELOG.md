@@ -1,5 +1,9 @@
 # Changelog
 
+# 1.33.2-3
+
+- Member role fix on invite/update https://github.com/dani-garcia/vaultwarden/pull/5673
+
 # 1.33.2-2
 
 - Ignore unsupported roles
