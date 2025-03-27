@@ -5,6 +5,10 @@ Based on [Timshel/sso-support](https://github.com/Timshel/vaultwarden/tree/sso-s
 
 #### :warning: Branch will be rebased and forced-pushed when updated. :warning:
 
+## Acknowledgement
+
+Project made possible with support from the [sponsors](https://github.com/sponsors/Timshel) and the [TU Bergakademie Freiberg](https://tu-freiberg.de/en).
+
 ## Versions
 
 Tagged version are based on Vaultwarden releases, Ex: `1.31.0-1` is the first release based on Vaultwarden `1.31.0`.
