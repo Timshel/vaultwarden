@@ -1,5 +1,10 @@
 # Changelog
 
+# 1.33.2-4
+
+- Augment default `refresh_token` validity to 90days on mobile (match [Bitwarden](https://bitwarden.com/blog/configuring-bitwarden-clients-for-offline-access/#staying-logged-in-to-browser-extension-desktop-and-mobile-clients), apply to non SSO login or if `SSO_AUTH_ONLY_NOT_SESSION` is activated).
+- Remove a duplicate token expiration check, and log the `refresh_token` on decode failure (`LOG_LEVEL=info,vaultwarden::auth=debug`).
+
 # 1.33.2-3
 
 - Member role fix on invite/update https://github.com/dani-garcia/vaultwarden/pull/5673
