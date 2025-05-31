@@ -19,7 +19,6 @@ export async function logNewUser(
 
         await test.step('Landing page', async () => {
             await utils.cleanLanding(page);
-
             if( options.override ) {
                 await page.getByRole('button', { name: 'Continue' }).click();
             } else {
@@ -38,7 +37,7 @@ export async function logNewUser(
         await test.step('Create Vault account', async () => {
             await expect(page.getByRole('heading', { name: 'Join organisation' })).toBeVisible();
             await page.getByLabel('New master password (required)', { exact: true }).fill(user.password);
-            await page.getByLabel('Confirm master password (').fill(user.password);
+            await page.getByLabel('Confirm new master password (').fill(user.password);
             await page.getByRole('button', { name: 'Create account' }).click();
         });
 
@@ -125,7 +124,7 @@ export async function logUser(
         });
 
         await test.step('Default vault page', async () => {
-            await expect(page).toHaveTitle(/Vaultwarden Web/);
+            await expect(page).toHaveTitle(/Vaults/);
             await expect(page.getByTitle('All vaults', { exact: true })).toBeVisible();
         });
 

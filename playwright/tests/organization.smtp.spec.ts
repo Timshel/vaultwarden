@@ -17,9 +17,9 @@ test.beforeAll('Setup', async ({ browser }, testInfo: TestInfo) => {
 
     await mailServer.listen();
 
-    await utils.startVaultwarden(browser, testInfo, {
+    await utils.startVault(browser, testInfo, {
         SMTP_HOST: process.env.MAILDEV_HOST,
-        SMTP_FROM: process.env.VAULTWARDEN_SMTP_FROM,
+        SMTP_FROM: process.env.PW_SMTP_FROM,
     });
 
     mail1Buffer = mailServer.buffer(users.user1.email);
@@ -28,7 +28,7 @@ test.beforeAll('Setup', async ({ browser }, testInfo: TestInfo) => {
 });
 
 test.afterAll('Teardown', async ({}, testInfo: TestInfo) => {
-    utils.stopVaultwarden(testInfo);
+    utils.stopVault(testInfo);
     [mail1Buffer, mail2Buffer, mail3Buffer, mailServer].map((m) => m?.close());
 });
 
@@ -58,7 +58,7 @@ test('invited with new account', async ({ page }) => {
 
         //await page.getByLabel('Name').fill(users.user2.name);
         await page.getByLabel('New master password (required)', { exact: true }).fill(users.user2.password);
-        await page.getByLabel('Confirm master password (').fill(users.user2.password);
+        await page.getByLabel('Confirm new master password (').fill(users.user2.password);
         await page.getByRole('button', { name: 'Create account' }).click();
         await utils.checkNotification(page, 'Your new account has been created');
 
@@ -110,6 +110,6 @@ test('Confirm invited user', async ({ page }) => {
 
 test('Organization is visible', async ({ page }) => {
     await logUser(test, page, users.user2, mail2Buffer);
-    await page.getByLabel('vault: Test').click();
+    await page.getByRole('button', { name: 'vault: Test', exact: true }).click();
     await expect(page.getByLabel('Filter: Default collection')).toBeVisible();
 });
