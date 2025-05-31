@@ -1,4 +1,5 @@
-import { expect, type Browser,Page } from '@playwright/test';
+import { expect, type Browser, Page } from '@playwright/test';
+
 import { type MailBuffer } from 'maildev';
 
 import * as utils from '../../global-utils';
@@ -17,7 +18,7 @@ export async function createAccount(test, page: Page, user: { email: string, nam
 
         // Vault finish Creation
         await page.getByLabel('New master password (required)', { exact: true }).fill(user.password);
-        await page.getByLabel('Confirm master password (').fill(user.password);
+        await page.getByLabel('Confirm new master password (').fill(user.password);
         await page.getByRole('button', { name: 'Create account' }).click();
 
         await utils.checkNotification(page, 'Your new account has been created')
@@ -28,6 +29,7 @@ export async function createAccount(test, page: Page, user: { email: string, nam
 
         if( mailBuffer ){
             await expect(mailBuffer.next((m) => m.subject === "Welcome")).resolves.toBeDefined();
+            await expect(mailBuffer.next((m) => m.subject === "New Device Logged In From Firefox")).resolves.toBeDefined();
         }
     });
 }
@@ -47,7 +49,7 @@ export async function logUser(test, page: Page, user: { email: string, password:
         await expect(page).toHaveTitle(/Vaultwarden Web/);
 
         if( mailBuffer ){
-            await expect(mailBuffer.next((m) => m.subject === 'New Device Logged In From Firefox')).resolves.toBeDefined();
+            await expect(mailBuffer.next((m) => m.subject === "New Device Logged In From Firefox")).resolves.toBeDefined();
         }
     });
 }

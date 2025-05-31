@@ -154,36 +154,47 @@ async function wipePostgres(){
 
 function dbConfig(testInfo: TestInfo){
     switch(testInfo.project.name) {
-        case "postgres": return {
-            DATABASE_URL: `postgresql://${process.env.POSTGRES_USER}:${process.env.POSTGRES_PASSWORD}@127.0.0.1:${process.env.POSTGRES_PORT}/${process.env.POSTGRES_DB}`
-        }
-        case "mariadb": return {
-            DATABASE_URL: `mysql://${process.env.MARIADB_USER}:${process.env.MARIADB_PASSWORD}@127.0.0.1:${process.env.MARIADB_PORT}/${process.env.MARIADB_DATABASE}`
-        }
-        case "mysql": return {
-            DATABASE_URL: `mysql://${process.env.MYSQL_USER}:${process.env.MYSQL_PASSWORD}@127.0.0.1:${process.env.MYSQL_PORT}/${process.env.MYSQL_DATABASE}`
-        }
-        default: return { I_REALLY_WANT_VOLATILE_STORAGE: true }
+        case "postgres":
+        case "sso-postgres":
+            return { DATABASE_URL: `postgresql://${process.env.POSTGRES_USER}:${process.env.POSTGRES_PASSWORD}@127.0.0.1:${process.env.POSTGRES_PORT}/${process.env.POSTGRES_DB}` };
+        case "mariadb":
+        case "sso-mariadb":
+            return { DATABASE_URL: `mysql://${process.env.MARIADB_USER}:${process.env.MARIADB_PASSWORD}@127.0.0.1:${process.env.MARIADB_PORT}/${process.env.MARIADB_DATABASE}` };
+        case "mysql":
+        case "sso-mysql":
+            return { DATABASE_URL: `mysql://${process.env.MYSQL_USER}:${process.env.MYSQL_PASSWORD}@127.0.0.1:${process.env.MYSQL_PORT}/${process.env.MYSQL_DATABASE}`};
+        case "sqlite":
+        case "sso-sqlite":
+            return { I_REALLY_WANT_VOLATILE_STORAGE: true };
+        default:
+            throw new Error(`Unknow database name: ${testInfo.project.name}`);
     }
 }
 
 /**
  *  All parameters passed in `env` need to be added to the docker-compose.yml
  **/
-export async function startVaultwarden(browser: Browser, testInfo: TestInfo, env = {}, resetDB: Boolean = true) {
+export async function startVault(browser: Browser, testInfo: TestInfo, env = {}, resetDB: Boolean = true) {
     if( resetDB ){
         switch(testInfo.project.name) {
             case "postgres":
+            case "sso-postgres":
                 await wipePostgres();
                 break;
             case "mariadb":
+            case "sso-mariadb":
                 await wipeMariaDB();
                 break;
             case "mysql":
+            case "sso-mysql":
                 await wipeMysqlDB();
                 break;
-            default:
+            case "sqlite":
+            case "sso-sqlite":
                 wipeSqlite();
+                break;
+            default:
+                throw new Error(`Unknow database name: ${testInfo.project.name}`);
         }
     }
 
@@ -195,14 +206,18 @@ export async function startVaultwarden(browser: Browser, testInfo: TestInfo, env
     console.log(`Vaultwarden running on: ${process.env.DOMAIN}`);
 }
 
-export async function stopVaultwarden() {
-    console.log(`Vaultwarden stopping`);
-    execSync(`docker compose --profile playwright --env-file test.env stop Vaultwarden`);
+export async function stopVault(force: boolean = false) {
+    if( force === false && process.env.PW_KEEP_SERVICE_RUNNNING === "true" ) {
+        console.log(`Keep vaultwarden running on: ${process.env.DOMAIN}`);
+    } else {
+        console.log(`Vaultwarden stopping`);
+        execSync(`docker compose --profile playwright --env-file test.env stop Vaultwarden`);
+    }
 }
 
-export async function restartVaultwarden(page: Page, testInfo: TestInfo, env, resetDB: Boolean = true) {
-    stopVaultwarden();
-    return startVaultwarden(page.context().browser(), testInfo, env, resetDB);
+export async function restartVault(page: Page, testInfo: TestInfo, env, resetDB: Boolean = true) {
+    stopVault(true);
+    return startVault(page.context().browser(), testInfo, env, resetDB);
 }
 
 export async function checkNotification(page: Page, hasText: string) {
