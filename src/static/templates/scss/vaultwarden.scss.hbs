@@ -20,15 +20,6 @@ a[href$="/settings/sponsored-families"] {
   @extend %vw-hide;
 }
 
-/* Hide Log in with passkey on the login page */
-app-root form.ng-untouched a[routerlink="/login-with-passkey"] {
-  @extend %vw-hide;
-}
-/* Hide the or text followed by the two buttons hidden above */
-app-root form.ng-untouched > div:nth-child(1) > div:nth-child(3) > div:nth-child(2) {
-  @extend %vw-hide;
-}
-
 /* Hide Two-Factor menu in Organization settings */
 bit-nav-item[route="settings/two-factor"],
 a[href$="/settings/two-factor"] {
