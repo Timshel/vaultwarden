@@ -48,7 +48,7 @@ export async function policies(test, page: Page, name: string) {
 }
 
 export async function members(test, page: Page, name: string) {
-    await test.step(`Navigate to ${name}`, async () => {
+    await test.step(`Navigate to ${name} members`, async () => {
         await page.locator('a').filter({ hasText: 'Admin Console' }).first().click();
         await page.locator('org-switcher').getByLabel(/Toggle collapse/).click();
         await page.locator('org-switcher').getByRole('link', { name: `${name}` }).first().click();
