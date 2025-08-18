@@ -8,9 +8,14 @@ This rely on `docker` and the `compose` [plugin](https://docs.docker.com/compose
 First create a copy of `.env.template` as `.env` (This is done to prevent commiting your custom settings, Ex `SMTP_`).
 
 Then start the stack (the `profile` is required to run the `VaultWarden`).
+
+```bash
+> docker compose --profile Vaultwarden up VaultWarden
+```
+
 Then you can access :
 
- - `VaultWarden` on http://127.0.0.1:8000 with the default user `test@yopmail.com/test`.
+ - `VaultWarden` on http://localhost:8000 with the default user `test@yopmail.com/test`.
  - `Authentik` on http://127.0.0.1:9000/ with the default user `akadmin/admin`
 
 ## Switching VaultWarden front-end

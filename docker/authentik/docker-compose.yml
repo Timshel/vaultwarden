@@ -1,13 +1,9 @@
 ---
-version: "3.4"
 services:
   VaultWarden:
-    image: vaultwarden
+    image: vaultwarden/server:testing
     profiles: ["VaultWarden"]
     network_mode: "host"
-    build:
-      context: ../../..
-      dockerfile: Dockerfile
     depends_on:
       - authentik-server
     env_file: .env
@@ -30,7 +26,7 @@ services:
       start_period: 20s
       interval: 30s
   authentik-server:
-    image: ghcr.io/goauthentik/server:2025.2.3
+    image: ghcr.io/goauthentik/server:2025.6
     command: server
     env_file:
       - .env
@@ -43,7 +39,7 @@ services:
       - postgresql
       - redis
   authentik-worker:
-    image: ghcr.io/goauthentik/server:2025.2.3
+    image: ghcr.io/goauthentik/server:2025.6
     command: worker
     env_file:
       - .env

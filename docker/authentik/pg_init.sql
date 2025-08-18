@@ -6030,7 +6030,7 @@ COPY public.authentik_providers_oauth2_devicetoken (id, expires, expiring, devic
 --
 
 COPY public.authentik_providers_oauth2_oauth2provider (provider_ptr_id, client_type, client_id, client_secret, redirect_uris, include_claims_in_id_token, refresh_token_validity, signing_key_id, sub_mode, issuer_mode, access_code_validity, access_token_validity) FROM stdin;
-1	confidential	VaultWarden	VaultWarden	http://127.0.0.1:8000/identity/connect/oidc-signin	t	days=30	b2d58434-b8d5-4c0d-98a2-6029300f2eeb	hashed_user_id	per_provider	minutes=1	minutes=10
+1	confidential	VaultWarden	VaultWarden	http://localhost:8000/identity/connect/oidc-signin	t	days=30	b2d58434-b8d5-4c0d-98a2-6029300f2eeb	hashed_user_id	per_provider	minutes=1	minutes=10
 \.
 
 
