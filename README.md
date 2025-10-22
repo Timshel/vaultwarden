@@ -1,3 +1,7 @@
+# :warning: With the PR merged this is not updated anymore :warning:
+
+-----------------
+
 # Fork from [dani-garcia/vaultwarden](https://github.com/dani-garcia/vaultwarden)
 
 Goal is to help testing code for the SSO [PR](https://github.com/dani-garcia/vaultwarden/pull/3899).
