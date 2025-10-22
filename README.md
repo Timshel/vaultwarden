@@ -1,4 +1,4 @@
-# :warning: With the PR merged this is not updated anymore :warning:
+# :warning: With the PR merged this is not updated anymore
 
 -----------------
 
